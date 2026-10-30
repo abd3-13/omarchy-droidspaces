@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "local.droidspaces",
+  "name": "Droidspaces",
+  "version": "1.0.0",
+  "author": "local",
+  "license": "MIT",
+  "description": "Manage local Droidspaces containers from the bar: live status, start, stop, restart, shell and details",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Droidspaces",
+    "description": "Local containers at a glance, with start, stop, restart, shell and details",
+    "category": "System",
+    "allowMultiple": false,
+    "defaults": {
+      "showCount": true,
+      "connectOnStartup": false
+    },
+    "schema": [
+      {
+        "key": "showCount",
+        "type": "boolean",
+        "label": "Show the container count on the bar",
+        "defaultValue": true
+      },
+      {
+        "key": "connectOnStartup",
+        "type": "boolean",
+        "label": "Connect (authenticate once) when the shell starts",
+        "defaultValue": false
+      }
+    ]
+  }
+}

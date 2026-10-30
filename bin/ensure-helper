@@ -1,0 +1,25 @@
+#!/bin/sh
+# Launch the root bridge, installing/refreshing it first when needed.
+#
+# The bridge is installed to a root-owned path so pkexec never executes a
+# script the logged-in user could have modified. The first run (or the first
+# run after a plugin update) asks for authentication twice: once for
+# /usr/bin/install, once for the bridge itself. Every later run asks once.
+set -eu
+
+src_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+src="$src_dir/bin/droidspaces-bridge"
+dest="/usr/local/libexec/droidspaces-omarchy/bridge"
+
+if [ ! -f "$src" ]; then
+  printf 'droidspaces: missing bridge at %s\n' "$src" >&2
+  exit 1
+fi
+
+if [ ! -x "$dest" ] || ! /usr/bin/cmp -s "$src" "$dest"; then
+  # /usr/bin/install is the privileged program here, so pkexec runs a
+  # trusted binary rather than a user-writable script.
+  /usr/bin/pkexec /usr/bin/install -D -m 0755 -o root -g root "$src" "$dest" || exit $?
+fi
+
+exec /usr/bin/pkexec "$dest" --replace

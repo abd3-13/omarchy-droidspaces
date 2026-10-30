@@ -1,0 +1,17 @@
+#!/bin/sh
+# Install or refresh the root bridge without starting it.
+#
+# Safe to run as your normal user: it asks pkexec to run /usr/bin/install,
+# a trusted system binary. pkexec never executes this user-writable script
+# as root. Use it to repair the installed copy after editing the plugin.
+set -eu
+
+src_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+src="$src_dir/bin/droidspaces-bridge"
+dest="/usr/local/libexec/droidspaces-omarchy/bridge"
+
+if [ "$(id -u)" -eq 0 ]; then
+  exec /usr/bin/install -D -m 0755 -o root -g root "$src" "$dest"
+fi
+
+exec /usr/bin/pkexec /usr/bin/install -D -m 0755 -o root -g root "$src" "$dest"

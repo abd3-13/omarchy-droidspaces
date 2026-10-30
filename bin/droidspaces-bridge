@@ -1,0 +1,620 @@
+#!/usr/bin/python3
+# Droidspaces <-> Omarchy shell bridge.
+#
+# Runs as root (started through pkexec by bin/ensure-helper) and speaks a
+# line oriented JSON protocol on stdin/stdout:
+#
+#   in : {"cmd":"refresh"}
+#        {"cmd":"watch","open":true|false}
+#        {"cmd":"start"|"stop"|"restart","name":"...","req":"..."}
+#        {"cmd":"logs","name":"...","lines":120,"req":"..."}
+#        {"cmd":"check","req":"..."}
+#        {"cmd":"exit"}
+#
+#   out: {"type":"hello",...}
+#        {"type":"state",...}                 (periodic + after every action)
+#        {"type":"result","req":...,...}
+#        {"type":"fatal","message":...}
+#
+# The process exits when stdin closes, so it cannot outlive the shell that
+# started it. It never invokes a shell and only accepts a fixed set of
+# commands for container names matching NAME_RE.
+#
+# SPDX-License-Identifier: MIT
+
+import argparse
+import json
+import os
+import queue
+import re
+import signal
+import stat
+import subprocess
+import sys
+import threading
+import time
+
+DEFAULT_WORKSPACE = "/var/lib/Droidspaces"
+DROIDSPACES = "/usr/bin/droidspaces"
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+MAX_LINE = 1 << 20
+IDLE_INTERVAL = 6.0
+OPEN_INTERVAL = 2.0
+MAX_OUTPUT = 6000
+
+ACTIONS = ("start", "stop", "restart")
+COMMANDS = set(ACTIONS) | {"refresh", "watch", "logs", "check", "exit"}
+
+
+def log(message):
+    try:
+        sys.stderr.write("droidspaces-bridge: %s\n" % message)
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def clean(text, limit=MAX_OUTPUT):
+    text = ANSI_RE.sub("", text or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(text) > limit:
+        text = text[-limit:]
+    return text
+
+
+def proc_cmdline(pid):
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def proc_uid(pid):
+    try:
+        with open("/proc/%d/status" % pid, "r", encoding="ascii", errors="ignore") as handle:
+            for line in handle:
+                if line.startswith("Uid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        return -1
+    return -1
+
+
+def replace_instances(program):
+    """Terminate older copies of this same installed bridge.
+
+    Quickshell does not reap a plugin's child processes when the plugin is
+    reloaded, so a reload with an open panel used to leave root helpers
+    behind. A single session only needs one bridge, so the freshly launched
+    helper stops the old ones before taking over.
+    """
+    me = os.getpid()
+    target = os.path.realpath(program)
+    victims = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == me:
+            continue
+        if proc_uid(pid) != 0:
+            continue
+        args = proc_cmdline(pid)
+        if not args:
+            continue
+        first = os.path.realpath(args[0])
+        ours = first == target
+        if not ours and len(args) > 1 and os.path.basename(first).startswith("python"):
+            ours = os.path.realpath(args[1]) == target
+        if ours:
+            victims.append(pid)
+    for pid in victims:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + 2.0
+    while victims and time.monotonic() < deadline:
+        victims = [pid for pid in victims if os.path.exists("/proc/%d" % pid)]
+        if victims:
+            time.sleep(0.05)
+    for pid in victims:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def summarize_check(text):
+    """Turn `droidspaces --json check` into a short readable summary.
+
+    Returns (message, passed) or None when the output is not the expected
+    JSON object.
+    """
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    ok = 0
+    missing = []
+    for key, value in data.items():
+        if key in ("version", "requirements_met"):
+            continue
+        if value in (0, False, "0"):
+            missing.append(key)
+        elif value in (1, True, "1"):
+            ok += 1
+    met = data.get("requirements_met")
+    passed = bool(met) if met is not None else not missing
+    lines = ["%s (%d/%d checks)" % (
+        "System check passed" if passed else "System check found problems",
+        ok,
+        ok + len(missing),
+    )]
+    if missing:
+        lines.append("Missing: " + ", ".join(missing))
+    return "\n".join(lines), passed
+
+
+def as_int(value, default=0):
+    try:
+        return int(str(value).strip(), 10)
+    except (TypeError, ValueError):
+        return default
+
+
+def read_config(path):
+    values = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+    except OSError:
+        return None
+    return values
+
+
+def rootfs_kind(path):
+    if not path:
+        return "unknown"
+    try:
+        info = os.stat(path)
+    except OSError:
+        return "missing"
+    if stat.S_ISBLK(info.st_mode):
+        return "block"
+    if stat.S_ISDIR(info.st_mode):
+        return "directory"
+    if stat.S_ISREG(info.st_mode):
+        return "image"
+    return "other"
+
+
+def log_info(workspace, name):
+    if not NAME_RE.match(name):
+        return "", 0
+    base = os.path.realpath(os.path.join(workspace, "Logs"))
+    path = os.path.realpath(os.path.join(base, name, "log"))
+    if not path.startswith(base + os.sep):
+        return "", 0
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return "", 0
+    return path, size
+
+
+class Bridge:
+    def __init__(self, workspace, allow_nonroot=False, once=False):
+        self.workspace = workspace
+        self.allow_nonroot = allow_nonroot
+        self.once = once
+        self.out_lock = threading.Lock()
+        self.ds_lock = threading.Lock()
+        self.actions = queue.Queue()
+        self.dirty = threading.Event()
+        self.stop = threading.Event()
+        self.open = False
+        self.interval = IDLE_INTERVAL
+        self.commands = queue.Queue()
+        self.version = ""
+        self.mode = ""
+        self.last_show_error = ""
+
+    # -- output ---------------------------------------------------------
+    def emit(self, payload):
+        line = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        with self.out_lock:
+            try:
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+            except (BrokenPipeError, ValueError):
+                self.stop.set()
+
+    # -- droidspaces ----------------------------------------------------
+    def run(self, args, timeout):
+        # droidspaces reads and prunes the same pid/config/workspace state, so
+        # never let the status poll overlap a start/stop/restart.
+        with self.ds_lock:
+            try:
+                completed = subprocess.run(
+                    args,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=timeout,
+                    close_fds=True,
+                )
+                out = completed.stdout.decode("utf-8", "replace")
+                err = completed.stderr.decode("utf-8", "replace")
+                return completed.returncode, out, err
+            except subprocess.TimeoutExpired:
+                return 124, "", "timed out after %ss" % timeout
+            except OSError as exc:
+                return 127, "", str(exc)
+
+    def probe(self):
+        if not os.access(DROIDSPACES, os.X_OK):
+            return
+        code, out, _ = self.run([DROIDSPACES, "version"], 5)
+        if code == 0:
+            self.version = clean(out, 64).splitlines()[-1] if out.strip() else ""
+        code, out, _ = self.run([DROIDSPACES, "mode"], 5)
+        if code == 0:
+            self.mode = clean(out, 64).splitlines()[-1] if out.strip() else ""
+
+    def show(self):
+        if os.geteuid() != 0 and not self.allow_nonroot:
+            return None
+        code, out, err = self.run([DROIDSPACES, "--json", "show"], 20)
+        if code != 0:
+            self.last_show_error = clean(err or out, 400) or (
+                "droidspaces exited with code %d" % code
+            )
+            return None
+        self.last_show_error = ""
+        start = out.find("{")
+        end = out.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            data = json.loads(out[start:end + 1])
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    # -- state ----------------------------------------------------------
+    def collect(self):
+        show = self.show()
+        running = {}
+        if show:
+            for entry in show.get("running") or []:
+                if isinstance(entry, dict) and NAME_RE.match(str(entry.get("name", ""))):
+                    running[str(entry["name"])] = entry
+
+        containers = []
+        seen = set()
+        cdir = os.path.join(self.workspace, "Containers")
+        try:
+            entries = sorted(os.listdir(cdir))
+        except OSError:
+            entries = []
+        for entry in entries:
+            folder = os.path.join(cdir, entry)
+            if not os.path.isdir(folder):
+                continue
+            cfg = read_config(os.path.join(folder, "container.config"))
+            if cfg is None:
+                continue
+            name = cfg.get("name") or entry
+            if not NAME_RE.match(name):
+                name = entry if NAME_RE.match(entry) else ""
+            if not name:
+                continue
+            seen.add(name)
+            live = running.get(name) or running.get(entry) or {}
+            containers.append(self.describe(name, cfg, live))
+
+        # A running container whose config folder vanished (moved rootfs,
+        # upgraded workspace) is still worth listing.
+        for name, live in running.items():
+            if name not in seen:
+                containers.append(self.describe(name, {}, live))
+
+        containers.sort(key=lambda c: (not c["running"], c["name"].lower()))
+
+        mem_total = 0
+        mem_used = 0
+        try:
+            with open("/proc/meminfo", "r", encoding="ascii", errors="ignore") as handle:
+                for line in handle:
+                    if line.startswith("MemTotal:"):
+                        mem_total = as_int(line.split()[1])
+                    elif line.startswith("MemAvailable:"):
+                        mem_used = max(0, mem_total - as_int(line.split()[1]))
+        except OSError:
+            pass
+        try:
+            load1 = os.getloadavg()[0]
+        except OSError:
+            load1 = 0.0
+
+        return {
+            "type": "state",
+            "ts": int(time.time()),
+            "version": self.version,
+            "mode": self.mode,
+            "workspace": self.workspace,
+            "available": os.access(DROIDSPACES, os.X_OK),
+            "error": self.last_show_error,
+            "total": len(containers),
+            "running_count": sum(1 for c in containers if c["running"]),
+            "ram_used_kb": sum(c["ram_used_kb"] for c in containers),
+            "host": {
+                "cpus": os.cpu_count() or 0,
+                "load1": round(load1, 2),
+                "mem_total_kb": mem_total,
+                "mem_used_kb": mem_used,
+            },
+            "containers": containers,
+        }
+
+    def describe(self, name, cfg, live):
+        running = bool(live)
+        rootfs = cfg.get("rootfs_path", "")
+        kind = rootfs_kind(rootfs)
+        quota = as_int(cfg.get("cpu_quota"))
+        period = as_int(cfg.get("cpu_period")) or 100000
+        mem_limit = as_int(cfg.get("memory_limit"))
+        log_path, log_size = log_info(self.workspace, name)
+        ports = cfg.get("port_forwards", "")
+        return {
+            "name": name,
+            "running": running,
+            "pid": as_int(live.get("pid")),
+            "os": str(live.get("os", "")),
+            "hostname": str(live.get("hostname") or cfg.get("hostname") or name),
+            "ip": str(live.get("ip", "")),
+            "ip6": str(live.get("ip6", "")),
+            "uptime_sec": as_int(live.get("uptime_sec")),
+            "uptime": str(live.get("uptime", "")),
+            "ram_used_kb": as_int(live.get("ram_used_kb")),
+            "ram_limit_kb": as_int(live.get("ram_limit_kb")) or (mem_limit // 1024 if mem_limit else 0),
+            "cpu_permill": as_int(live.get("cpu_permill")),
+            "cpu_limit_permill": as_int(live.get("cpu_limit_permill")),
+            "swap_allowed": bool(live.get("swap_allowed", False)),
+            "x11": bool(live.get("x11", 0)),
+            "rootfs_path": rootfs,
+            "rootfs_kind": kind,
+            "rootfs_exists": kind not in ("missing", "unknown"),
+            "net_mode": cfg.get("net_mode", "nat"),
+            "port_forwards": ports,
+            "static_nat_ip": cfg.get("static_nat_ip", ""),
+            "memory_limit_bytes": mem_limit,
+            "cpu_quota": quota,
+            "cpu_period": period,
+            "cpu_limit_cores": round(quota / period, 2) if quota > 0 else 0,
+            "pids_limit": as_int(cfg.get("pids_limit")),
+            "privileged": cfg.get("privileged", ""),
+            "bind_mounts": cfg.get("bind_mounts", ""),
+            "dns_servers": cfg.get("dns_servers", ""),
+            "allow_swap": cfg.get("allow_swap", ""),
+            "log_path": log_path,
+            "log_size": log_size,
+        }
+
+    # -- actions --------------------------------------------------------
+    def run_action(self, item):
+        action = item.get("action")
+        name = item.get("name", "")
+        req = item.get("req", "")
+        lines = max(1, min(2000, as_int(item.get("lines"), 120)))
+
+        if action in ACTIONS:
+            if not NAME_RE.match(name):
+                return self.result(req, action, False, 2, "Invalid container name.")
+            if action == "start":
+                cfg = read_config(os.path.join(
+                    self.workspace, "Containers", name, "container.config")) or {}
+                rootfs = cfg.get("rootfs_path", "")
+                if rootfs and rootfs_kind(rootfs) in ("missing", "unknown"):
+                    return self.result(
+                        req, action, False, 1,
+                        "Rootfs is missing: " + rootfs, name,
+                    )
+            code, out, err = self.run(
+                [DROIDSPACES, "--name=" + name, action],
+                300 if action in ("start", "restart") else 120,
+            )
+            text = clean(out or err, 500)
+            message = text.splitlines()[-1] if text else (
+                "%s finished" % action if code == 0 else "droidspaces exited with code %d" % code
+            )
+            return self.result(req, action, code == 0, code, message, name)
+
+        if action == "logs":
+            if not NAME_RE.match(name):
+                return self.result(req, action, False, 2, "Invalid container name.")
+            path, _ = log_info(self.workspace, name)
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                    tail = handle.readlines()[-lines:]
+                text = clean("".join(tail))
+            except OSError as exc:
+                return self.result(req, action, False, 1, str(exc), name)
+            return self.result(req, action, True, 0, text, name)
+
+        if action == "check":
+            code, out, err = self.run([DROIDSPACES, "--json", "check"], 90)
+            text = clean(out or err)
+            summary = summarize_check(text)
+            if summary is not None:
+                message, passed = summary
+                return self.result(req, action, code == 0 and passed, code, message)
+            return self.result(req, action, code == 0, code, text or "check finished")
+
+        return self.result(req, action, False, 2, "Unknown command.", name)
+
+    def result(self, req, action, ok, code, message, name=""):
+        return {
+            "type": "result",
+            "req": req,
+            "action": action,
+            "name": name,
+            "ok": bool(ok),
+            "code": code,
+            "message": message,
+        }
+
+    def worker(self):
+        while not self.stop.is_set():
+            try:
+                item = self.actions.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            if item is None:
+                return
+            try:
+                self.emit(self.run_action(item))
+            except Exception as exc:  # pragma: no cover - defensive
+                self.emit(self.result(item.get("req", ""), item.get("action", ""),
+                                      False, 1, "Helper error: %s" % exc,
+                                      item.get("name", "")))
+            self.dirty.set()
+
+    # -- protocol -------------------------------------------------------
+    def handle(self, msg):
+        if not isinstance(msg, dict):
+            return
+        cmd = msg.get("cmd")
+        if cmd not in COMMANDS:
+            self.emit({"type": "result", "req": str(msg.get("req", "")),
+                       "action": str(cmd), "ok": False, "code": 2,
+                       "message": "Unsupported command."})
+            return
+        if cmd == "exit":
+            self.stop.set()
+        elif cmd == "refresh":
+            self.dirty.set()
+        elif cmd == "watch":
+            self.open = bool(msg.get("open"))
+            self.interval = OPEN_INTERVAL if self.open else IDLE_INTERVAL
+        elif cmd in ACTIONS or cmd in ("logs", "check"):
+            self.actions.put({
+                "action": cmd,
+                "name": str(msg.get("name", "")),
+                "req": str(msg.get("req", "")),
+                "lines": msg.get("lines", 120),
+            })
+
+    def read_stdin(self):
+        while not self.stop.is_set():
+            line = sys.stdin.readline()
+            if not line:
+                self.commands.put(None)
+                return
+            if len(line) > MAX_LINE:
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            self.commands.put(msg)
+
+    def loop(self):
+        reader = threading.Thread(target=self.read_stdin, name="stdin", daemon=True)
+        reader.start()
+        worker = threading.Thread(target=self.worker, name="actions", daemon=True)
+        worker.start()
+
+        self.emit({
+            "type": "hello",
+            "euid": os.geteuid(),
+            "workspace": self.workspace,
+            "version": self.version,
+            "pid": os.getpid(),
+        })
+
+        next_state = 0.0
+        parent = os.getppid()
+        while not self.stop.is_set():
+            # If the shell that started us is gone, do not linger as a root
+            # process. (Quickshell may not reap our end of the pipe.)
+            if os.getppid() != parent:
+                break
+            try:
+                msg = self.commands.get(timeout=0.4)
+            except queue.Empty:
+                msg = False
+            if msg is None:
+                break
+            if msg is not False:
+                self.handle(msg)
+            now = time.monotonic()
+            if self.dirty.is_set() or now >= next_state:
+                self.dirty.clear()
+                try:
+                    self.emit(self.collect())
+                except Exception as exc:  # pragma: no cover - defensive
+                    self.emit({"type": "fatal", "message": "State error: %s" % exc})
+                next_state = time.monotonic() + self.interval
+
+        self.stop.set()
+        self.actions.put(None)
+        self.emit({"type": "bye"})
+        return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Droidspaces Omarchy bridge")
+    parser.add_argument("--workspace", default=os.environ.get("DS_WORKSPACE", DEFAULT_WORKSPACE))
+    parser.add_argument("--allow-nonroot", action="store_true",
+                        help="collect config-only state without root (testing)")
+    parser.add_argument("--once", action="store_true", help="print one state and exit")
+    parser.add_argument("--replace", action="store_true",
+                        help="stop older copies of this bridge before starting")
+    parser.add_argument("--interval", type=float, default=0.0, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    if os.geteuid() != 0 and not args.allow_nonroot:
+        sys.stderr.write("droidspaces-bridge: root privileges required\n")
+        return 77
+
+    if args.replace and os.geteuid() == 0:
+        replace_instances(sys.argv[0])
+
+    workspace = os.path.abspath(args.workspace)
+    bridge = Bridge(workspace, allow_nonroot=args.allow_nonroot, once=args.once)
+    if args.interval > 0:
+        bridge.interval = args.interval
+    bridge.probe()
+
+    if args.once:
+        bridge.emit(bridge.collect())
+        return 0
+    try:
+        return bridge.loop()
+    except KeyboardInterrupt:
+        return 0
+    except BrokenPipeError:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

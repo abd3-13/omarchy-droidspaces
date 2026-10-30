@@ -1,0 +1,10 @@
+#!/bin/sh
+# Remove the installed root bridge. Asks for authentication once.
+set -eu
+
+dest="/usr/local/libexec/droidspaces-omarchy/bridge"
+dir="/usr/local/libexec/droidspaces-omarchy"
+
+/usr/bin/pkexec /usr/bin/rm -f "$dest" || exit $?
+/usr/bin/rmdir "$dir" 2>/dev/null || true
+printf 'removed %s\n' "$dest"
