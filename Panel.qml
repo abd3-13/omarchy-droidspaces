@@ -33,6 +33,23 @@ Panel {
   property int cursor: -1
   property string selectedName: ""
 
+  // ---- create state -------------------------------------------------
+  property bool createOpen: false
+  property bool creating: false
+  property string createName: ""
+  property string createTarball: ""
+  property string createSize: "16G"
+  property string createImage: ""
+  property bool createStart: false
+  property string createStage: ""
+  property string createError: ""
+
+  readonly property string defaultImagePath: {
+    var ws = snapshot && snapshot.workspace ? String(snapshot.workspace) : "/var/lib/Droidspaces"
+    var name = createName.trim()
+    return name === "" ? "" : ws + "/Containers/" + name + "/rootfs.img"
+  }
+
   // ---- theme --------------------------------------------------------
   readonly property string ff: bar ? bar.fontFamily : Style.font.family
   readonly property color dim: Qt.darker(barForeground, 1.45)
@@ -154,6 +171,12 @@ Panel {
       return
     }
 
+    if (message.type === "progress") {
+      if (String(message.action || "") === "create")
+        root.createStage = String(message.stage || message.message || "")
+      return
+    }
+
     if (message.type === "result") {
       root.handleResult(message)
       return
@@ -186,6 +209,21 @@ Panel {
     if (action === "check") {
       var text = String(message.message || "").split("\n").slice(0, 6).join("\n")
       root.setNotice(text || (message.ok ? "System check passed" : "System check failed"), !message.ok)
+      return
+    }
+
+    if (action === "create") {
+      root.creating = false
+      root.createStage = ""
+      if (message.ok) {
+        root.createOpen = false
+        root.createError = ""
+        root.setNotice(String(message.message || ("Created " + name)),
+                       String(message.start_error || "") !== "")
+        root.refresh()
+      } else {
+        root.createError = String(message.message || "Creation failed.")
+      }
       return
     }
 
@@ -240,6 +278,106 @@ Panel {
   function refresh() {
     if (root.connected) send({ cmd: "refresh" })
     else root.connectHelper()
+  }
+
+  // ---- create -------------------------------------------------------
+  function expandHome(path) {
+    var value = String(path || "").trim()
+    var home = Quickshell.env("HOME") || ""
+    if (value === "~") return home
+    if (value.indexOf("~/") === 0) return home + value.slice(1)
+    return value
+  }
+
+  function validContainerName(name) {
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(name || ""))
+  }
+
+  function openCreate() {
+    if (!root.connected) return
+    root.createOpen = true
+    root.creating = false
+    root.createName = ""
+    root.createTarball = ""
+    root.createSize = "16G"
+    root.createImage = ""
+    root.createStart = false
+    root.createStage = ""
+    root.createError = ""
+    root.notice = ""
+    createNameField.text = ""
+    createTarballField.text = ""
+    createSizeField.text = "16G"
+    createImageField.text = ""
+    Qt.callLater(function() { createNameField.forceActiveFocus() })
+  }
+
+  function closeCreate() {
+    if (root.creating) return
+    root.createOpen = false
+    root.createStage = ""
+    root.createError = ""
+  }
+
+  function submitCreate() {
+    if (!root.connected || root.creating) return
+    var name = root.createName.trim()
+    var tarball = root.expandHome(root.createTarball)
+    var image = root.expandHome(root.createImage)
+    var size = root.createSize.trim()
+    if (!validContainerName(name)) {
+      root.createError = "Use 1-64 letters, digits, dots, dashes or underscores; start with a letter or digit."
+      return
+    }
+    if (tarball === "") {
+      root.createError = "Choose the rootfs tarball you downloaded."
+      return
+    }
+    if (tarball.charAt(0) !== "/") {
+      root.createError = "The tarball path must be absolute."
+      return
+    }
+    if (image !== "" && image.charAt(0) !== "/") {
+      root.createError = "The image path must be absolute."
+      return
+    }
+    if (size === "") {
+      root.createError = "Enter an image size, for example 16G."
+      return
+    }
+
+    var req = "r" + (++root.reqSeq)
+    var next = {}
+    for (var key in root.pending) next[key] = root.pending[key]
+    next[req] = { action: "create", name: name }
+    root.pending = next
+    root.creating = true
+    root.createError = ""
+    root.createStage = "Queued…"
+
+    var message = {
+      cmd: "create",
+      req: req,
+      name: name,
+      tarball: tarball,
+      size: size,
+      start: root.createStart
+    }
+    if (image !== "") message.image = image
+
+    if (!send(message)) {
+      var rest = {}
+      for (var other in root.pending)
+        if (other !== req) rest[other] = root.pending[other]
+      root.pending = rest
+      root.creating = false
+      root.createStage = ""
+      root.createError = "The helper is not connected."
+    }
+  }
+
+  function browseTarball() {
+    if (!root.creating) filePicker.running = true
   }
 
   // ---- shell / logs -------------------------------------------------
@@ -307,6 +445,7 @@ Panel {
       sendWatch()
       selectedName = ""
       cursor = -1
+      if (!root.creating && !filePicker.running) root.createOpen = false
     }
   }
 
@@ -352,6 +491,9 @@ Panel {
       root.containers = []
       root.snapshot = null
       root.pending = ({})
+      root.creating = false
+      root.createStage = ""
+      root.createOpen = false
       forceStop.stop()
       if (root.quitting) {
         root.quitting = false
@@ -365,6 +507,32 @@ Panel {
         root.helperError = "The helper needs root privileges."
       else
         root.helperError = "The helper stopped (code " + exitCode + ")."
+    }
+  }
+
+  Process {
+    id: filePicker
+    running: false
+    command: [
+      "omarchy-file-select",
+      "--title", "Select a rootfs tarball",
+      "--extensions", "tar xz gz bz2 zst txz tgz"
+    ]
+
+    stdout: SplitParser {
+      onRead: function(line) {
+        var picked = String(line).trim()
+        if (picked === "") return
+        root.createTarball = picked
+        createTarballField.text = picked
+      }
+    }
+
+    onExited: function(exitCode, exitStatus) {
+      if (exitCode === 2)
+        root.createError = "The file chooser failed; type the path instead."
+      else if (exitCode === 127)
+        root.createError = "The file chooser could not be started; type the path instead."
     }
   }
 
@@ -394,6 +562,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: root.createOpen
 
       onCloseRequested: root.closeOrCollapse()
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -404,6 +573,7 @@ Panel {
         else if (text === "s") root.toggleSelectedAction()
         else if (text === "d") root.disconnectHelper()
         else if (text === "c") root.requestCheck()
+        else if (text === "n") root.openCreate()
       }
 
       Column {
@@ -481,6 +651,7 @@ Panel {
 
             PanelActionButton {
               visible: root.connected || root.connecting
+              enabled: !root.creating
               iconText: "\u{f0156}"
               tooltipText: root.connecting ? "Cancel" : "Disconnect"
               foreground: root.barForeground
@@ -563,11 +734,242 @@ Panel {
           }
         }
 
+        // ---------- create ----------
+        Column {
+          id: createForm
+          width: parent.width
+          spacing: Style.space(8)
+          visible: root.connected && root.createOpen
+          focus: root.createOpen
+
+          Keys.onEscapePressed: function(event) {
+            root.closeCreate()
+            event.accepted = true
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            text: "New container"
+            color: root.barForeground
+            font.family: root.ff
+            font.pixelSize: Style.font.subtitle
+            font.bold: true
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Creates a sparse ext4 image and extracts a rootfs tarball into it. "
+                  + "The container is added to the list, stopped unless you ask to start it."
+            color: root.dim
+            font.family: root.ff
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            text: "Name"
+            color: root.dim
+            font.family: root.ff
+            font.pixelSize: Style.font.caption
+          }
+
+          TextField {
+            id: createNameField
+            width: parent.width
+            placeholderText: "ubuntu"
+            foreground: root.barForeground
+            font.family: root.ff
+            font.pixelSize: Style.font.body
+            enabled: !root.creating
+            text: root.createName
+            onTextChanged: if (text !== root.createName) root.createName = text
+            Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            text: "Rootfs tarball"
+            color: root.dim
+            font.family: root.ff
+            font.pixelSize: Style.font.caption
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            TextField {
+              id: createTarballField
+              width: parent.width - browseButton.width - parent.spacing
+              placeholderText: "/home/you/Downloads/rootfs.tar.xz"
+              foreground: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.body
+              enabled: !root.creating
+              text: root.createTarball
+              onTextChanged: if (text !== root.createTarball) root.createTarball = text
+              Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+            }
+
+            Button {
+              id: browseButton
+              width: Style.space(92)
+              iconText: "\u{f0256}"
+              iconSize: Style.font.icon
+              text: "Browse"
+              fontSize: Style.font.bodySmall
+              foreground: root.barForeground
+              fontFamily: root.ff
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+              bordered: true
+              enabled: !root.creating
+              onClicked: root.browseTarball()
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Column {
+              width: (parent.width - parent.spacing) * 0.36
+              spacing: Style.space(4)
+
+              Text {
+                textFormat: Text.PlainText
+                text: "Image size"
+                color: root.dim
+                font.family: root.ff
+                font.pixelSize: Style.font.caption
+              }
+
+              TextField {
+                id: createSizeField
+                width: parent.width
+                placeholderText: "16G"
+                foreground: root.barForeground
+                font.family: root.ff
+                font.pixelSize: Style.font.body
+                enabled: !root.creating
+                text: root.createSize
+                onTextChanged: if (text !== root.createSize) root.createSize = text
+                Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+              }
+            }
+
+            Column {
+              width: parent.width - (parent.width - parent.spacing) * 0.36 - parent.spacing
+              spacing: Style.space(4)
+
+              Text {
+                textFormat: Text.PlainText
+                text: "Image path (optional)"
+                color: root.dim
+                font.family: root.ff
+                font.pixelSize: Style.font.caption
+              }
+
+              TextField {
+                id: createImageField
+                width: parent.width
+                placeholderText: root.defaultImagePath !== "" ? root.defaultImagePath
+                  : "Default: <workspace>/Containers/<name>/rootfs.img"
+                foreground: root.barForeground
+                font.family: root.ff
+                font.pixelSize: Style.font.body
+                enabled: !root.creating
+                text: root.createImage
+                onTextChanged: if (text !== root.createImage) root.createImage = text
+                Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+              }
+            }
+          }
+
+          Button {
+            width: parent.width
+            iconText: root.createStart ? "\u{f0132}" : "\u{f0133}"
+            iconSize: Style.font.icon
+            text: root.createStart ? "Start after creation  ·  on" : "Start after creation  ·  off"
+            fontSize: Style.font.bodySmall
+            foreground: root.barForeground
+            fontFamily: root.ff
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+            bordered: true
+            selected: root.createStart
+            enabled: !root.creating
+            onClicked: root.createStart = !root.createStart
+          }
+
+          Text {
+            width: parent.width
+            visible: root.creating && root.createStage !== ""
+            textFormat: Text.PlainText
+            text: root.createStage
+            color: root.dim
+            font.family: root.ff
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            width: parent.width
+            visible: root.createError !== ""
+            textFormat: Text.PlainText
+            text: root.createError
+            color: root.urgentColor
+            font.family: root.ff
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+            maximumLineCount: 5
+            elide: Text.ElideRight
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(7)
+
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              iconText: "\u{f0156}"
+              iconSize: Style.font.icon
+              text: "Cancel"
+              fontSize: Style.font.bodySmall
+              foreground: root.barForeground
+              fontFamily: root.ff
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+              bordered: true
+              enabled: !root.creating
+              onClicked: root.closeCreate()
+            }
+
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              iconText: root.creating ? "\u{f0453}" : "\u{f0415}"
+              iconSize: Style.font.icon
+              iconSpinning: root.creating
+              text: root.creating ? "Creating…" : "Create"
+              fontSize: Style.font.bodySmall
+              foreground: root.barForeground
+              fontFamily: root.ff
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+              bordered: true
+              enabled: !root.creating && root.available
+              onClicked: root.submitCreate()
+            }
+          }
+        }
+
         // ---------- connected ----------
         Column {
           width: parent.width
           spacing: Style.space(10)
-          visible: root.connected
+          visible: root.connected && !root.createOpen
 
           // summary
           BorderSurface {
@@ -724,7 +1126,7 @@ Panel {
               width: parent.width
               horizontalAlignment: Text.AlignHCenter
               textFormat: Text.PlainText
-              text: "Create one with droidspaces in a terminal; it will appear here."
+              text: "Use New container below to install a rootfs tarball into an ext4 image."
               color: root.dim
               font.family: root.ff
               font.pixelSize: Style.font.caption
@@ -771,6 +1173,22 @@ Panel {
               onOpenShell: function(name) { root.openShell(name) }
               onOpenLog: function(name) { root.openLog(name) }
             }
+          }
+
+          // new container
+          Button {
+            width: parent.width
+            iconText: "\u{f0415}"
+            iconSize: Style.font.icon
+            text: "New container"
+            fontSize: Style.font.bodySmall
+            foreground: root.barForeground
+            fontFamily: root.ff
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
+            bordered: true
+            enabled: root.available && !root.anyBusy
+            onClicked: root.openCreate()
           }
 
           // footer

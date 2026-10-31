@@ -9,10 +9,13 @@
 #        {"cmd":"start"|"stop"|"restart","name":"...","req":"..."}
 #        {"cmd":"logs","name":"...","lines":120,"req":"..."}
 #        {"cmd":"check","req":"..."}
+#        {"cmd":"create","name":"...","tarball":"...","image":"...",
+#         "size":"16G","hostname":"...","start":false,"req":"..."}
 #        {"cmd":"exit"}
 #
 #   out: {"type":"hello",...}
 #        {"type":"state",...}                 (periodic + after every action)
+#        {"type":"progress","req":...,...}    (create stages)
 #        {"type":"result","req":...,...}
 #        {"type":"fatal","message":...}
 #
@@ -25,8 +28,10 @@
 import argparse
 import json
 import os
+import pwd
 import queue
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -44,7 +49,11 @@ OPEN_INTERVAL = 2.0
 MAX_OUTPUT = 6000
 
 ACTIONS = ("start", "stop", "restart")
-COMMANDS = set(ACTIONS) | {"refresh", "watch", "logs", "check", "exit"}
+COMMANDS = set(ACTIONS) | {"refresh", "watch", "logs", "check", "create", "exit"}
+SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)B?$", re.IGNORECASE)
+SIZE_UNITS = {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}
+MIN_IMAGE_SIZE = 256 << 20
+CREATE_TIMEOUT = 60 * 60
 
 
 def log(message):
@@ -61,6 +70,88 @@ def clean(text, limit=MAX_OUTPUT):
     if len(text) > limit:
         text = text[-limit:]
     return text
+
+
+def parse_size(text):
+    match = SIZE_RE.match(str(text or "").strip())
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return int(value * SIZE_UNITS[match.group(2).upper()])
+
+
+def find_tool(*names):
+    for name in names:
+        if os.path.isabs(name):
+            if os.access(name, os.X_OK):
+                return name
+            continue
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def run_process(args, timeout):
+    try:
+        completed = subprocess.run(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            close_fds=True,
+        )
+        return (
+            completed.returncode,
+            completed.stdout.decode("utf-8", "replace"),
+            completed.stderr.decode("utf-8", "replace"),
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after %ss" % timeout
+    except OSError as exc:
+        return 127, "", str(exc)
+
+
+def command_error(code, out, err):
+    text = clean(err or out, 800)
+    if text:
+        return text.splitlines()[-1]
+    return "command exited with code %d" % code
+
+
+def user_path(value):
+    value = str(value or "").strip()
+    if value == "~" or value.startswith("~/"):
+        home = ""
+        uid = os.environ.get("PKEXEC_UID", "")
+        if uid.isdigit():
+            try:
+                home = pwd.getpwuid(int(uid)).pw_dir
+            except KeyError:
+                home = ""
+        if not home:
+            home = os.path.expanduser("~")
+        value = home + value[1:]
+    if not value:
+        return ""
+    return os.path.abspath(value)
+
+
+def write_config(path, text):
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.write(fd, text.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
 
 
 def proc_cmdline(pid):
@@ -417,11 +508,179 @@ class Bridge:
         }
 
     # -- actions --------------------------------------------------------
+    def create(self, item):
+        name = str(item.get("name", ""))
+        req = str(item.get("req", ""))
+
+        def progress(message):
+            self.emit({"type": "progress", "req": req, "action": "create",
+                       "stage": message})
+
+        def fail(message, code=1):
+            return self.result(req, "create", False, code, message, name)
+
+        if not NAME_RE.match(name):
+            return fail("Invalid container name.", 2)
+
+        raw_tarball = str(item.get("tarball", "")).strip()
+        if not raw_tarball:
+            return fail("Choose a rootfs tarball.")
+        if not (raw_tarball.startswith("/") or raw_tarball.startswith("~")):
+            return fail("Tarball path must be absolute.")
+        tarball = user_path(raw_tarball)
+        if not os.path.isfile(tarball):
+            return fail("Tarball not found: " + tarball)
+        if not os.access(tarball, os.R_OK):
+            return fail("Tarball is not readable: " + tarball)
+
+        size = parse_size(item.get("size") or "16G")
+        if size is None:
+            return fail("Invalid image size. Use a value like 16G.")
+        if size < MIN_IMAGE_SIZE:
+            return fail("Image size must be at least %dM." % (MIN_IMAGE_SIZE >> 20))
+
+        container_dir = os.path.join(self.workspace, "Containers", name)
+        config_path = os.path.join(container_dir, "container.config")
+        if os.path.exists(config_path):
+            return fail("A container named %s already exists." % name)
+
+        raw_image = str(item.get("image", "")).strip()
+        if raw_image and not (raw_image.startswith("/") or raw_image.startswith("~")):
+            return fail("Image path must be absolute.")
+        image = user_path(raw_image) or os.path.join(container_dir, "rootfs.img")
+        if os.path.exists(image):
+            return fail("Image already exists: " + image)
+
+        mountpoint = os.path.join(container_dir, ".create-mnt")
+        mount_tool = find_tool("mount", "/bin/mount", "/usr/bin/mount")
+        umount_tool = find_tool("umount", "/bin/umount", "/usr/bin/umount")
+        tar_tool = find_tool("tar", "/bin/tar", "/usr/bin/tar")
+        mkfs_tool = find_tool("mkfs.ext4", "/sbin/mkfs.ext4", "/usr/sbin/mkfs.ext4")
+        mke2fs_tool = find_tool("mke2fs", "/sbin/mke2fs", "/usr/sbin/mke2fs")
+        if not mount_tool or not umount_tool:
+            return fail("mount/umount were not found.")
+        if not tar_tool:
+            return fail("tar was not found.")
+        if not mkfs_tool and not mke2fs_tool:
+            return fail("mkfs.ext4 was not found.")
+
+        created_image = False
+        mounted = False
+        config_written = False
+        try:
+            progress("Preparing %s…" % name)
+            try:
+                os.makedirs(container_dir, mode=0o755, exist_ok=True)
+                parent = os.path.dirname(image)
+                if parent:
+                    os.makedirs(parent, mode=0o755, exist_ok=True)
+                fd = os.open(image, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    os.ftruncate(fd, size)
+                finally:
+                    os.close(fd)
+                created_image = True
+            except OSError as exc:
+                return fail("Cannot create image: %s" % exc)
+
+            progress("Formatting %s…" % os.path.basename(image))
+            label = name[:16]
+            if mkfs_tool:
+                mkfs_args = [mkfs_tool, "-F", "-L", label, image]
+            else:
+                mkfs_args = [mke2fs_tool, "-t", "ext4", "-F", "-L", label, image]
+            code, out, err = run_process(mkfs_args, 300)
+            if code != 0:
+                return fail("mkfs.ext4 failed: " + command_error(code, out, err))
+
+            progress("Mounting image…")
+            try:
+                os.makedirs(mountpoint, mode=0o755, exist_ok=True)
+            except OSError as exc:
+                return fail("Cannot create mount point: %s" % exc)
+            code, out, err = run_process(
+                [mount_tool, "-t", "ext4", "-o", "loop,rw", image, mountpoint], 120)
+            if code != 0:
+                return fail("Mount failed: " + command_error(code, out, err))
+            mounted = True
+
+            progress("Extracting %s…" % os.path.basename(tarball))
+            code, out, err = run_process(
+                [tar_tool, "-xf", tarball, "-C", mountpoint], CREATE_TIMEOUT)
+            if code != 0:
+                return fail("Extraction failed: " + command_error(code, out, err))
+            os.sync()
+
+            if not (os.path.lexists(os.path.join(mountpoint, "sbin/init")) or
+                    os.path.lexists(os.path.join(mountpoint, "usr/sbin/init"))):
+                return fail("The tarball does not look like a Linux rootfs: /sbin/init is missing.")
+
+            progress("Unmounting image…")
+            code, out, err = run_process([umount_tool, mountpoint], 120)
+            if code != 0:
+                run_process([umount_tool, "-l", mountpoint], 60)
+            mounted = os.path.ismount(mountpoint)
+            if mounted:
+                return fail("Could not unmount the image: " + command_error(code, out, err))
+            try:
+                os.rmdir(mountpoint)
+            except OSError:
+                pass
+
+            progress("Writing container configuration…")
+            hostname = str(item.get("hostname") or name).strip() or name
+            if not re.match(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$", hostname):
+                hostname = name
+            write_config(config_path, (
+                "# Droidspaces Container Configuration\n"
+                "# Generated by the Omarchy Droidspaces plugin\n\n"
+                "name=%s\n"
+                "hostname=%s\n"
+                "rootfs_path=%s\n"
+                "net_mode=nat\n"
+            ) % (name, hostname, image))
+            config_written = True
+
+            started = False
+            start_error = ""
+            if item.get("start"):
+                progress("Starting %s…" % name)
+                code, out, err = self.run([DROIDSPACES, "--name=" + name, "start"], 300)
+                if code == 0:
+                    started = True
+                else:
+                    start_error = command_error(code, out, err)
+
+            message = "Created %s." % name
+            if item.get("start"):
+                message += " Started." if started else " Start failed: " + start_error
+            result = self.result(req, "create", True, 0, message, name)
+            result["started"] = started
+            result["start_error"] = start_error
+            return result
+        except Exception as exc:
+            return fail("Creation failed: %s" % exc)
+        finally:
+            if mounted:
+                run_process([umount_tool, "-l", mountpoint], 60)
+            try:
+                os.rmdir(mountpoint)
+            except OSError:
+                pass
+            if created_image and not config_written and not os.path.ismount(mountpoint):
+                try:
+                    os.unlink(image)
+                except OSError:
+                    pass
+
     def run_action(self, item):
         action = item.get("action")
         name = item.get("name", "")
         req = item.get("req", "")
         lines = max(1, min(2000, as_int(item.get("lines"), 120)))
+
+        if action == "create":
+            return self.create(item)
 
         if action in ACTIONS:
             if not NAME_RE.match(name):
@@ -512,13 +771,22 @@ class Bridge:
         elif cmd == "watch":
             self.open = bool(msg.get("open"))
             self.interval = OPEN_INTERVAL if self.open else IDLE_INTERVAL
-        elif cmd in ACTIONS or cmd in ("logs", "check"):
-            self.actions.put({
+        elif cmd in ACTIONS or cmd in ("logs", "check", "create"):
+            item = {
                 "action": cmd,
                 "name": str(msg.get("name", "")),
                 "req": str(msg.get("req", "")),
                 "lines": msg.get("lines", 120),
-            })
+            }
+            if cmd == "create":
+                item.update({
+                    "tarball": str(msg.get("tarball", "")),
+                    "image": str(msg.get("image", "")),
+                    "size": str(msg.get("size", "16G")),
+                    "hostname": str(msg.get("hostname", "")),
+                    "start": bool(msg.get("start", False)),
+                })
+            self.actions.put(item)
 
     def read_stdin(self):
         while not self.stop.is_set():

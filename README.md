@@ -5,6 +5,7 @@ A bar widget and panel for the containers managed by
 
 - Live count on the bar (`running` or `running/total`)
 - List of configured containers with OS, hostname, IP, uptime, CPU and RAM
+- Create a container from a downloaded rootfs tarball into a sparse ext4 image
 - Start, stop and restart
 - Open a shell in a running container
 - Details: rootfs, network mode, ports, memory/CPU/PID limits, bind mounts,
@@ -12,11 +13,17 @@ A bar widget and panel for the containers managed by
 - Warns when a container's rootfs image or directory is missing: the row says
   `rootfs missing`, Start is disabled, and the helper refuses to start it
 - Refresh and `droidspaces check` from the panel
-- Keyboard: arrows move, Enter/Space expands, `s` start/stop, `r` refresh,
-  `c` check, `d` disconnect, Esc collapses/closes
+- Keyboard: arrows move, Enter/Space expands, `n` new container,
+  `s` start/stop, `r` refresh, `c` check, `d` disconnect, Esc collapses/closes
 
-It manages **existing** containers only. Creating or editing container
-configuration stays in the terminal.
+**New container** installs a rootfs tarball (`.tar`, `.tar.xz`, `.tar.gz`,
+`.tar.zst`, …) into a sparse ext4 image. The panel asks for a name, the tarball
+path (or **Browse**), an image size (default `16G`) and an optional image path;
+by default the image goes to
+`<workspace>/Containers/<name>/rootfs.img`. Creation formats the image,
+extracts the tarball, verifies `/sbin/init` or `/usr/sbin/init`, and writes
+the container config. It can optionally start the container afterwards.
+Editing an existing container's configuration still stays in the terminal.
 
 ## Why a helper
 
@@ -33,9 +40,10 @@ unusable, so the widget starts one long-lived root bridge through `pkexec`:
 
 The bridge streams one JSON object per line and accepts a small command set on
 stdin (`refresh`, `watch`, `start`, `stop`, `restart`, `logs`, `check`,
-`exit`). Container names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` and no
-shell is ever invoked. It ticks every 6 s while closed and 2 s while the panel
-is open.
+`create`, `exit`). Creation streams `progress` messages while it prepares,
+formats, mounts and extracts. Container names must match
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` and no shell is ever invoked. It ticks
+every 6 s while closed and 2 s while the panel is open.
 
 Two lifecycle rules keep exactly one helper alive: a newly started bridge
 stops older copies of itself (`--replace`), and every bridge exits when the
@@ -119,6 +127,9 @@ authentication once and then returns.
 
 - The helper is root-owned and only accepts the fixed command set above; it
   never passes a container name through a shell.
+- Creation only runs the fixed tools `mkfs.ext4`/`mke2fs`, `mount`, `tar` and
+  `umount` with validated paths; it refuses to overwrite an existing image or
+  container config.
 - It runs the system `/usr/bin/droidspaces` as root. Keep that binary and the
   container root filesystems trusted: a writable container rootfs is, by
   design, a way to run code as root inside that container.
