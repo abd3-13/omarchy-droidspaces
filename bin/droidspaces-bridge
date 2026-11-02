@@ -10,7 +10,8 @@
 #        {"cmd":"logs","name":"...","lines":120,"req":"..."}
 #        {"cmd":"check","req":"..."}
 #        {"cmd":"create","name":"...","tarball":"...","image":"...",
-#         "size":"16G","hostname":"...","start":false,"req":"..."}
+#         "size":"16G","hostname":"...","start":false,"options":{...},
+#         "req":"..."}
 #        {"cmd":"exit"}
 #
 #   out: {"type":"hello",...}
@@ -27,6 +28,7 @@
 
 import argparse
 import json
+import math
 import os
 import pwd
 import queue
@@ -54,6 +56,9 @@ SIZE_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)B?$", re.IGNORECASE)
 SIZE_UNITS = {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}
 MIN_IMAGE_SIZE = 256 << 20
 CREATE_TIMEOUT = 60 * 60
+NET_MODES = ("nat", "gateway", "macvlan", "host", "none")
+MACVLAN_MODES = ("bridge", "private", "vepa", "passthru")
+PRIVILEGED_TAGS = ("nomask", "nocaps", "noseccomp", "shared", "full")
 
 
 def log(message):
@@ -83,6 +88,12 @@ def parse_size(text):
     if value <= 0:
         return None
     return int(value * SIZE_UNITS[match.group(2).upper()])
+
+
+def as_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def find_tool(*names):
@@ -152,6 +163,178 @@ def write_config(path, text):
     finally:
         os.close(fd)
     os.replace(tmp, path)
+
+
+def build_container_config(item, name, hostname, image):
+    """Validate the create form's CLI options and render a config file."""
+    opts = item.get("options")
+    if not isinstance(opts, dict):
+        opts = {}
+
+    def text(key):
+        value = opts.get(key, "")
+        if isinstance(value, bool):
+            return "1" if value else ""
+        return str(value or "").strip()
+
+    string_labels = {
+        "init": "Init binary",
+        "env_file": "Environment file",
+        "bind_mounts": "Bind mounts",
+        "nat_ip": "Static NAT IP",
+        "upstream": "Upstream interfaces",
+        "ports": "Port forwards",
+        "dns": "DNS servers",
+        "gateway": "Gateway container",
+        "gateway_net": "Gateway network",
+        "gateway_iface": "Gateway interface",
+        "gateway_bridge": "Gateway bridge",
+        "macvlan_parent": "MACVLAN parent",
+        "privileged": "Privileged tags",
+    }
+    for key, label in string_labels.items():
+        value = text(key)
+        if "\n" in value or "\r" in value:
+            return None, "%s cannot contain newlines." % label
+
+    net_mode = text("net_mode") or "nat"
+    if net_mode not in NET_MODES:
+        return None, "Invalid network mode: " + net_mode
+
+    init = text("init")
+    if " " in init:
+        return None, "Init binary cannot contain spaces."
+
+    env_file = text("env_file")
+    if env_file and not os.path.isabs(env_file):
+        return None, "Environment file path must be absolute."
+    if env_file and not os.path.isfile(env_file):
+        return None, "Environment file not found: " + env_file
+
+    bind_mounts = text("bind_mounts")
+    if bind_mounts:
+        for entry in bind_mounts.split(","):
+            parts = entry.strip().split(":")
+            if len(parts) < 2 or not parts[0] or not parts[1]:
+                return None, "Bind mounts must look like SRC:DEST[:ro]."
+            if not parts[0].startswith("/") or not parts[1].startswith("/"):
+                return None, "Bind mount paths must be absolute."
+            if len(parts) > 2 and parts[2] != "ro":
+                return None, "Bind mount options must be 'ro' or empty."
+
+    memory = 0
+    raw_memory = text("memory")
+    if raw_memory:
+        memory = parse_size(raw_memory)
+        if memory is None or memory < 4 * 1024 * 1024:
+            return None, "Memory must be a size like 512M or 2G (minimum 4M)."
+
+    cpu_quota = 0
+    raw_cpus = text("cpus")
+    if raw_cpus:
+        try:
+            cpus = float(raw_cpus)
+        except ValueError:
+            return None, "CPUs must be a number like 1 or 1.5."
+        if not math.isfinite(cpus) or cpus < 0.01:
+            return None, "CPUs must be at least 0.01."
+        cpu_quota = int(cpus * 100000)
+        if cpu_quota < 1000:
+            return None, "CPUs value is too small."
+
+    pids = 0
+    raw_pids = text("pids_limit")
+    if raw_pids:
+        pids = as_int(raw_pids, -1)
+        if pids < 16 or pids > 4194304:
+            return None, "PID limit must be between 16 and 4194304."
+
+    privileged = text("privileged")
+    if privileged:
+        tags = [tag.strip() for tag in privileged.split(",") if tag.strip()]
+        if not tags or any(tag not in PRIVILEGED_TAGS for tag in tags):
+            return None, "Privileged tags must be: " + ", ".join(PRIVILEGED_TAGS) + "."
+        privileged = ",".join(tags)
+
+    macvlan_mode = text("macvlan_mode") or "bridge"
+    if macvlan_mode not in MACVLAN_MODES:
+        return None, "Invalid MACVLAN mode: " + macvlan_mode
+
+    nat_ip = text("nat_ip")
+    upstream = text("upstream")
+    ports = text("ports")
+    dns = text("dns")
+    gateway = text("gateway")
+    gateway_net = text("gateway_net")
+    gateway_iface = text("gateway_iface")
+    gateway_bridge = text("gateway_bridge")
+    macvlan_parent = text("macvlan_parent")
+
+    if net_mode == "gateway" and not gateway:
+        return None, "Gateway mode needs a gateway container."
+    if net_mode == "macvlan" and not macvlan_parent:
+        return None, "MACVLAN mode needs a parent interface."
+
+    lines = [
+        "# Droidspaces Container Configuration",
+        "# Generated by the Omarchy Droidspaces plugin",
+        "",
+        "name=" + name,
+        "hostname=" + hostname,
+        "rootfs_path=" + image,
+        "net_mode=" + net_mode,
+    ]
+    if init:
+        lines.append("custom_init=" + init)
+    if env_file:
+        lines.append("env_file=" + env_file)
+    if bind_mounts:
+        lines.append("bind_mounts=" + bind_mounts)
+    if net_mode == "nat":
+        if nat_ip:
+            lines.append("static_nat_ip=" + nat_ip)
+        if upstream:
+            lines.append("upstream_interfaces=" + upstream)
+        if ports:
+            lines.append("port_forwards=" + ports)
+    elif net_mode == "gateway":
+        lines.append("gateway_container=" + gateway)
+        if gateway_net:
+            lines.append("gateway_net=" + gateway_net)
+        if gateway_iface:
+            lines.append("gateway_lan_ifname=" + gateway_iface)
+        if gateway_bridge:
+            lines.append("gateway_bridge=" + gateway_bridge)
+    elif net_mode == "macvlan":
+        lines.append("macvlan_parent=" + macvlan_parent)
+        if macvlan_mode != "bridge":
+            lines.append("macvlan_mode=" + macvlan_mode)
+    if dns:
+        lines.append("dns_servers=" + dns)
+    for key, config_key in (
+        ("disable_ipv6", "disable_ipv6"),
+        ("hw_access", "enable_hw_access"),
+        ("allow_vts", "allow_vts"),
+        ("gpu", "enable_gpu_mode"),
+        ("x11", "enable_x11"),
+        ("allow_swap", "allow_swap"),
+        ("selinux_permissive", "selinux_permissive"),
+        ("allow_sandboxing", "allow_sandboxing"),
+        ("volatile", "volatile_mode"),
+        ("force_cgroupv1", "force_cgroupv1"),
+    ):
+        if as_bool(opts.get(key)):
+            lines.append(config_key + "=1")
+    if memory:
+        lines.append("memory_limit=%d" % memory)
+    if cpu_quota:
+        lines.append("cpu_period=100000")
+        lines.append("cpu_quota=%d" % cpu_quota)
+    if pids:
+        lines.append("pids_limit=%d" % pids)
+    if privileged:
+        lines.append("privileged=" + privileged)
+    return "\n".join(lines) + "\n", None
 
 
 def proc_cmdline(pid):
@@ -551,6 +734,13 @@ class Bridge:
         if os.path.exists(image):
             return fail("Image already exists: " + image)
 
+        hostname = str(item.get("hostname") or name).strip() or name
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$", hostname):
+            hostname = name
+        config_text, config_error = build_container_config(item, name, hostname, image)
+        if config_error:
+            return fail(config_error)
+
         mountpoint = os.path.join(container_dir, ".create-mnt")
         mount_tool = find_tool("mount", "/bin/mount", "/usr/bin/mount")
         umount_tool = find_tool("umount", "/bin/umount", "/usr/bin/umount")
@@ -628,17 +818,7 @@ class Bridge:
                 pass
 
             progress("Writing container configuration…")
-            hostname = str(item.get("hostname") or name).strip() or name
-            if not re.match(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$", hostname):
-                hostname = name
-            write_config(config_path, (
-                "# Droidspaces Container Configuration\n"
-                "# Generated by the Omarchy Droidspaces plugin\n\n"
-                "name=%s\n"
-                "hostname=%s\n"
-                "rootfs_path=%s\n"
-                "net_mode=nat\n"
-            ) % (name, hostname, image))
+            write_config(config_path, config_text)
             config_written = True
 
             started = False
@@ -779,12 +959,14 @@ class Bridge:
                 "lines": msg.get("lines", 120),
             }
             if cmd == "create":
+                options = msg.get("options")
                 item.update({
                     "tarball": str(msg.get("tarball", "")),
                     "image": str(msg.get("image", "")),
                     "size": str(msg.get("size", "16G")),
                     "hostname": str(msg.get("hostname", "")),
                     "start": bool(msg.get("start", False)),
+                    "options": options if isinstance(options, dict) else {},
                 })
             self.actions.put(item)
 

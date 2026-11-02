@@ -43,6 +43,35 @@ Panel {
   property bool createStart: false
   property string createStage: ""
   property string createError: ""
+  property string createHostname: ""
+  property string createInit: ""
+  property string createEnvFile: ""
+  property string createBind: ""
+  property string createNet: "nat"
+  property string createNatIp: ""
+  property string createUpstream: ""
+  property string createPorts: ""
+  property string createDns: ""
+  property bool createDisableIpv6: false
+  property string createGateway: ""
+  property string createGatewayNet: ""
+  property string createGatewayIface: ""
+  property string createGatewayBridge: ""
+  property string createMacvlanParent: ""
+  property string createMacvlanMode: "bridge"
+  property bool createHwAccess: false
+  property bool createAllowVts: false
+  property bool createGpu: false
+  property bool createX11: false
+  property string createMemory: ""
+  property bool createAllowSwap: false
+  property string createCpus: ""
+  property string createPids: ""
+  property string createPrivileged: ""
+  property bool createSelinuxPermissive: false
+  property bool createAllowSandboxing: false
+  property bool createVolatile: false
+  property bool createForceCgroupv1: false
 
   readonly property string defaultImagePath: {
     var ws = snapshot && snapshot.workspace ? String(snapshot.workspace) : "/var/lib/Droidspaces"
@@ -293,14 +322,59 @@ Panel {
     return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(name || ""))
   }
 
+  function toggleText(label, on) {
+    return label + (on ? "  ·  on" : "  ·  off")
+  }
+
+  function setCreateToggle(key, value) {
+    if (key === "hw_access") root.createHwAccess = value
+    else if (key === "allow_vts") root.createAllowVts = value
+    else if (key === "gpu") root.createGpu = value
+    else if (key === "x11") root.createX11 = value
+    else if (key === "disable_ipv6") root.createDisableIpv6 = value
+    else if (key === "allow_swap") root.createAllowSwap = value
+    else if (key === "selinux_permissive") root.createSelinuxPermissive = value
+    else if (key === "allow_sandboxing") root.createAllowSandboxing = value
+    else if (key === "volatile") root.createVolatile = value
+    else if (key === "force_cgroupv1") root.createForceCgroupv1 = value
+  }
+
   function openCreate() {
     if (!root.connected) return
-    root.createOpen = true
     root.creating = false
     root.createName = ""
     root.createTarball = ""
     root.createSize = "16G"
     root.createImage = ""
+    root.createHostname = ""
+    root.createInit = ""
+    root.createEnvFile = ""
+    root.createBind = ""
+    root.createNet = "nat"
+    root.createNatIp = ""
+    root.createUpstream = ""
+    root.createPorts = ""
+    root.createDns = ""
+    root.createDisableIpv6 = false
+    root.createGateway = ""
+    root.createGatewayNet = ""
+    root.createGatewayIface = ""
+    root.createGatewayBridge = ""
+    root.createMacvlanParent = ""
+    root.createMacvlanMode = "bridge"
+    root.createHwAccess = false
+    root.createAllowVts = false
+    root.createGpu = false
+    root.createX11 = false
+    root.createMemory = ""
+    root.createAllowSwap = false
+    root.createCpus = ""
+    root.createPids = ""
+    root.createPrivileged = ""
+    root.createSelinuxPermissive = false
+    root.createAllowSandboxing = false
+    root.createVolatile = false
+    root.createForceCgroupv1 = false
     root.createStart = false
     root.createStage = ""
     root.createError = ""
@@ -309,6 +383,26 @@ Panel {
     createTarballField.text = ""
     createSizeField.text = "16G"
     createImageField.text = ""
+    createHostnameField.text = ""
+    createInitField.text = ""
+    createEnvField.text = ""
+    createBindField.text = ""
+    createNatIpField.text = ""
+    createUpstreamField.text = ""
+    createPortsField.text = ""
+    createDnsField.text = ""
+    createGatewayField.text = ""
+    createGatewayNetField.text = ""
+    createGatewayIfaceField.text = ""
+    createGatewayBridgeField.text = ""
+    createMacvlanParentField.text = ""
+    createMemoryField.text = ""
+    createCpusField.text = ""
+    createPidsField.text = ""
+    createPrivilegedField.text = ""
+    createNetDropdown.value = "nat"
+    createMacvlanModeDropdown.value = "bridge"
+    root.createOpen = true
     Qt.callLater(function() { createNameField.forceActiveFocus() })
   }
 
@@ -325,6 +419,7 @@ Panel {
     var tarball = root.expandHome(root.createTarball)
     var image = root.expandHome(root.createImage)
     var size = root.createSize.trim()
+    var hostname = root.createHostname.trim()
     if (!validContainerName(name)) {
       root.createError = "Use 1-64 letters, digits, dots, dashes or underscores; start with a letter or digit."
       return
@@ -345,6 +440,16 @@ Panel {
       root.createError = "Enter an image size, for example 16G."
       return
     }
+    if (hostname !== "" && !/^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/.test(hostname)) {
+      root.createError = "Hostname must start with a letter or digit and use letters, digits, dots or dashes."
+      return
+    }
+
+    var envFile = root.expandHome(root.createEnvFile)
+    if (envFile !== "" && envFile.charAt(0) !== "/") {
+      root.createError = "The environment file path must be absolute."
+      return
+    }
 
     var req = "r" + (++root.reqSeq)
     var next = {}
@@ -361,7 +466,38 @@ Panel {
       name: name,
       tarball: tarball,
       size: size,
-      start: root.createStart
+      hostname: hostname,
+      start: root.createStart,
+      options: {
+        init: root.createInit.trim(),
+        env_file: envFile,
+        bind_mounts: root.createBind.trim(),
+        net_mode: root.createNet,
+        nat_ip: root.createNatIp.trim(),
+        upstream: root.createUpstream.trim(),
+        ports: root.createPorts.trim(),
+        dns: root.createDns.trim(),
+        disable_ipv6: root.createDisableIpv6,
+        gateway: root.createGateway.trim(),
+        gateway_net: root.createGatewayNet.trim(),
+        gateway_iface: root.createGatewayIface.trim(),
+        gateway_bridge: root.createGatewayBridge.trim(),
+        macvlan_parent: root.createMacvlanParent.trim(),
+        macvlan_mode: root.createMacvlanMode,
+        hw_access: root.createHwAccess,
+        allow_vts: root.createAllowVts,
+        gpu: root.createGpu,
+        x11: root.createX11,
+        memory: root.createMemory.trim(),
+        allow_swap: root.createAllowSwap,
+        cpus: root.createCpus.trim(),
+        pids_limit: root.createPids.trim(),
+        privileged: root.createPrivileged.trim(),
+        selinux_permissive: root.createSelinuxPermissive,
+        allow_sandboxing: root.createAllowSandboxing,
+        volatile: root.createVolatile,
+        force_cgroupv1: root.createForceCgroupv1
+      }
     }
     if (image !== "") message.image = image
 
@@ -735,10 +871,14 @@ Panel {
         }
 
         // ---------- create ----------
-        Column {
+        Flickable {
           id: createForm
           width: parent.width
-          spacing: Style.space(8)
+          height: Math.min(createFormColumn.implicitHeight, Style.space(470))
+          contentWidth: width
+          contentHeight: createFormColumn.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
           visible: root.connected && root.createOpen
           focus: root.createOpen
 
@@ -747,220 +887,796 @@ Panel {
             event.accepted = true
           }
 
-          Text {
-            textFormat: Text.PlainText
-            text: "New container"
-            color: root.barForeground
-            font.family: root.ff
-            font.pixelSize: Style.font.subtitle
-            font.bold: true
-          }
+          Column {
+            id: createFormColumn
+            width: createForm.width
+            spacing: Style.space(8)
 
-          Text {
-            width: parent.width
-            textFormat: Text.PlainText
-            text: "Creates a sparse ext4 image and extracts a rootfs tarball into it. "
-                  + "The container is added to the list, stopped unless you ask to start it."
-            color: root.dim
-            font.family: root.ff
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.Wrap
-          }
+            Text {
+              textFormat: Text.PlainText
+              text: "New container"
+              color: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+            }
 
-          Text {
-            textFormat: Text.PlainText
-            text: "Name"
-            color: root.dim
-            font.family: root.ff
-            font.pixelSize: Style.font.caption
-          }
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Creates a sparse ext4 image and extracts a rootfs tarball into it. "
+                    + "The container is added to the list, stopped unless you ask to start it."
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+            }
 
-          TextField {
-            id: createNameField
-            width: parent.width
-            placeholderText: "ubuntu"
-            foreground: root.barForeground
-            font.family: root.ff
-            font.pixelSize: Style.font.body
-            enabled: !root.creating
-            text: root.createName
-            onTextChanged: if (text !== root.createName) root.createName = text
-            Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            text: "Rootfs tarball"
-            color: root.dim
-            font.family: root.ff
-            font.pixelSize: Style.font.caption
-          }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(6)
+            Text {
+              textFormat: Text.PlainText
+              text: "Name"
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+            }
 
             TextField {
-              id: createTarballField
-              width: parent.width - browseButton.width - parent.spacing
-              placeholderText: "/home/you/Downloads/rootfs.tar.xz"
+              id: createNameField
+              width: parent.width
+              placeholderText: "ubuntu"
               foreground: root.barForeground
               font.family: root.ff
               font.pixelSize: Style.font.body
               enabled: !root.creating
-              text: root.createTarball
-              onTextChanged: if (text !== root.createTarball) root.createTarball = text
+              text: root.createName
+              onTextChanged: if (text !== root.createName) root.createName = text
               Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
             }
 
-            Button {
-              id: browseButton
-              width: Style.space(92)
-              iconText: "\u{f0256}"
-              iconSize: Style.font.icon
-              text: "Browse"
-              fontSize: Style.font.bodySmall
-              foreground: root.barForeground
-              fontFamily: root.ff
-              horizontalPadding: Style.spacing.controlPaddingX
-              verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
-              bordered: true
-              enabled: !root.creating
-              onClicked: root.browseTarball()
+            Text {
+              textFormat: Text.PlainText
+              text: "Rootfs tarball"
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
             }
-          }
 
-          Row {
-            width: parent.width
-            spacing: Style.space(8)
-
-            Column {
-              width: (parent.width - parent.spacing) * 0.36
-              spacing: Style.space(4)
-
-              Text {
-                textFormat: Text.PlainText
-                text: "Image size"
-                color: root.dim
-                font.family: root.ff
-                font.pixelSize: Style.font.caption
-              }
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
 
               TextField {
-                id: createSizeField
-                width: parent.width
-                placeholderText: "16G"
+                id: createTarballField
+                width: parent.width - browseButton.width - parent.spacing
+                placeholderText: "/home/you/Downloads/rootfs.tar.xz"
                 foreground: root.barForeground
                 font.family: root.ff
                 font.pixelSize: Style.font.body
                 enabled: !root.creating
-                text: root.createSize
-                onTextChanged: if (text !== root.createSize) root.createSize = text
+                text: root.createTarball
+                onTextChanged: if (text !== root.createTarball) root.createTarball = text
                 Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
               }
-            }
 
-            Column {
-              width: parent.width - (parent.width - parent.spacing) * 0.36 - parent.spacing
-              spacing: Style.space(4)
-
-              Text {
-                textFormat: Text.PlainText
-                text: "Image path (optional)"
-                color: root.dim
-                font.family: root.ff
-                font.pixelSize: Style.font.caption
-              }
-
-              TextField {
-                id: createImageField
-                width: parent.width
-                placeholderText: root.defaultImagePath !== "" ? root.defaultImagePath
-                  : "Default: <workspace>/Containers/<name>/rootfs.img"
+              Button {
+                id: browseButton
+                width: Style.space(92)
+                iconText: "\u{f0256}"
+                iconSize: Style.font.icon
+                text: "Browse"
+                fontSize: Style.font.bodySmall
                 foreground: root.barForeground
-                font.family: root.ff
-                font.pixelSize: Style.font.body
+                fontFamily: root.ff
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+                bordered: true
                 enabled: !root.creating
-                text: root.createImage
-                onTextChanged: if (text !== root.createImage) root.createImage = text
-                Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                onClicked: root.browseTarball()
               }
             }
-          }
 
-          Button {
-            width: parent.width
-            iconText: root.createStart ? "\u{f0132}" : "\u{f0133}"
-            iconSize: Style.font.icon
-            text: root.createStart ? "Start after creation  ·  on" : "Start after creation  ·  off"
-            fontSize: Style.font.bodySmall
-            foreground: root.barForeground
-            fontFamily: root.ff
-            horizontalPadding: Style.spacing.controlPaddingX
-            verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
-            bordered: true
-            selected: root.createStart
-            enabled: !root.creating
-            onClicked: root.createStart = !root.createStart
-          }
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
 
-          Text {
-            width: parent.width
-            visible: root.creating && root.createStage !== ""
-            textFormat: Text.PlainText
-            text: root.createStage
-            color: root.dim
-            font.family: root.ff
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.Wrap
-          }
+              Column {
+                width: (parent.width - parent.spacing) * 0.36
+                spacing: Style.space(4)
 
-          Text {
-            width: parent.width
-            visible: root.createError !== ""
-            textFormat: Text.PlainText
-            text: root.createError
-            color: root.urgentColor
-            font.family: root.ff
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.Wrap
-            maximumLineCount: 5
-            elide: Text.ElideRight
-          }
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Image size"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
 
-          Row {
-            width: parent.width
-            spacing: Style.space(7)
+                TextField {
+                  id: createSizeField
+                  width: parent.width
+                  placeholderText: "16G"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createSize
+                  onTextChanged: if (text !== root.createSize) root.createSize = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
 
-            Button {
-              width: (parent.width - parent.spacing) / 2
-              iconText: "\u{f0156}"
-              iconSize: Style.font.icon
-              text: "Cancel"
-              fontSize: Style.font.bodySmall
+              Column {
+                width: parent.width - (parent.width - parent.spacing) * 0.36 - parent.spacing
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Image path (optional)"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createImageField
+                  width: parent.width
+                  placeholderText: root.defaultImagePath !== "" ? root.defaultImagePath
+                    : "Default: <workspace>/Containers/<name>/rootfs.img"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createImage
+                  onTextChanged: if (text !== root.createImage) root.createImage = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Container options"
+              color: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              topPadding: Style.space(2)
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Hostname"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createHostnameField
+                  width: parent.width
+                  placeholderText: "Defaults to container name"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createHostname
+                  onTextChanged: if (text !== root.createHostname) root.createHostname = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Init binary"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createInitField
+                  width: parent.width
+                  placeholderText: "/sbin/init"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createInit
+                  onTextChanged: if (text !== root.createInit) root.createInit = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Environment file (optional)"
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+            }
+
+            TextField {
+              id: createEnvField
+              width: parent.width
+              placeholderText: "/path/to/container.env"
               foreground: root.barForeground
-              fontFamily: root.ff
-              horizontalPadding: Style.spacing.controlPaddingX
-              verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
-              bordered: true
+              font.family: root.ff
+              font.pixelSize: Style.font.body
               enabled: !root.creating
-              onClicked: root.closeCreate()
+              text: root.createEnvFile
+              onTextChanged: if (text !== root.createEnvFile) root.createEnvFile = text
+              Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Bind mounts (optional)"
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+            }
+
+            TextField {
+              id: createBindField
+              width: parent.width
+              placeholderText: "/srv/a:/mnt/a:ro,/srv/b:/mnt/b"
+              foreground: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.body
+              enabled: !root.creating
+              text: root.createBind
+              onTextChanged: if (text !== root.createBind) root.createBind = text
+              Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Network"
+              color: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              topPadding: Style.space(2)
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Dropdown {
+                id: createNetDropdown
+                width: (parent.width - parent.spacing) / 2
+                label: "Mode"
+                options: ["nat", "host", "none", "gateway", "macvlan"]
+                value: root.createNet
+                foreground: root.barForeground
+                fontFamily: root.ff
+                onChanged: if (value !== root.createNet) root.createNet = value
+              }
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "DNS servers"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createDnsField
+                  width: parent.width
+                  placeholderText: "1.1.1.1,9.9.9.9"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createDns
+                  onTextChanged: if (text !== root.createDns) root.createDns = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              visible: root.createNet === "nat"
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Static NAT IP"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createNatIpField
+                  width: parent.width
+                  placeholderText: "172.28.0.20"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createNatIp
+                  onTextChanged: if (text !== root.createNatIp) root.createNatIp = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Upstream interfaces"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createUpstreamField
+                  width: parent.width
+                  placeholderText: "eth0,wlan*"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createUpstream
+                  onTextChanged: if (text !== root.createUpstream) root.createUpstream = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.createNet === "nat"
+              textFormat: Text.PlainText
+              text: "Port forwards (optional)"
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+            }
+
+            TextField {
+              id: createPortsField
+              width: parent.width
+              visible: root.createNet === "nat"
+              placeholderText: "8080:80,5353:53/udp"
+              foreground: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.body
+              enabled: !root.creating
+              text: root.createPorts
+              onTextChanged: if (text !== root.createPorts) root.createPorts = text
+              Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              visible: root.createNet === "gateway"
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Gateway container"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createGatewayField
+                  width: parent.width
+                  placeholderText: "openwrt"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createGateway
+                  onTextChanged: if (text !== root.createGateway) root.createGateway = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Gateway network"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createGatewayNetField
+                  width: parent.width
+                  placeholderText: "lan"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createGatewayNet
+                  onTextChanged: if (text !== root.createGatewayNet) root.createGatewayNet = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              visible: root.createNet === "gateway"
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Gateway interface"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createGatewayIfaceField
+                  width: parent.width
+                  placeholderText: "eth1"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createGatewayIface
+                  onTextChanged: if (text !== root.createGatewayIface) root.createGatewayIface = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Gateway bridge"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createGatewayBridgeField
+                  width: parent.width
+                  placeholderText: "ds-lan"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createGatewayBridge
+                  onTextChanged: if (text !== root.createGatewayBridge) root.createGatewayBridge = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              visible: root.createNet === "macvlan"
+
+              Column {
+                width: (parent.width - parent.spacing) / 2
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Parent interface"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createMacvlanParentField
+                  width: parent.width
+                  placeholderText: "eth0"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createMacvlanParent
+                  onTextChanged: if (text !== root.createMacvlanParent) root.createMacvlanParent = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+
+              Dropdown {
+                id: createMacvlanModeDropdown
+                width: (parent.width - parent.spacing) / 2
+                label: "MACVLAN mode"
+                options: ["bridge", "private", "vepa", "passthru"]
+                value: root.createMacvlanMode
+                foreground: root.barForeground
+                fontFamily: root.ff
+                onChanged: if (value !== root.createMacvlanMode) root.createMacvlanMode = value
+              }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Resources and security"
+              color: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              topPadding: Style.space(2)
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Column {
+                width: (parent.width - 2 * parent.spacing) / 3
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Memory"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createMemoryField
+                  width: parent.width
+                  placeholderText: "2G"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createMemory
+                  onTextChanged: if (text !== root.createMemory) root.createMemory = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+
+              Column {
+                width: (parent.width - 2 * parent.spacing) / 3
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "CPUs"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createCpusField
+                  width: parent.width
+                  placeholderText: "1.5"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createCpus
+                  onTextChanged: if (text !== root.createCpus) root.createCpus = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+
+              Column {
+                width: (parent.width - 2 * parent.spacing) / 3
+                spacing: Style.space(4)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "PID limit"
+                  color: root.dim
+                  font.family: root.ff
+                  font.pixelSize: Style.font.caption
+                }
+
+                TextField {
+                  id: createPidsField
+                  width: parent.width
+                  placeholderText: "512"
+                  foreground: root.barForeground
+                  font.family: root.ff
+                  font.pixelSize: Style.font.body
+                  enabled: !root.creating
+                  text: root.createPids
+                  onTextChanged: if (text !== root.createPids) root.createPids = text
+                  Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+                }
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              text: "Privileged tags (optional)"
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+            }
+
+            TextField {
+              id: createPrivilegedField
+              width: parent.width
+              placeholderText: "nomask,nocaps"
+              foreground: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.body
+              enabled: !root.creating
+              text: root.createPrivileged
+              onTextChanged: if (text !== root.createPrivileged) root.createPrivileged = text
+              Keys.onEscapePressed: function(event) { root.closeCreate(); event.accepted = true }
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Hardware and boot"
+              color: root.barForeground
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              topPadding: Style.space(2)
+            }
+
+            Grid {
+              id: optionToggles
+              width: parent.width
+              columns: 2
+              rowSpacing: Style.space(6)
+              columnSpacing: Style.space(6)
+
+              Repeater {
+                model: [
+                  { key: "hw_access", label: "Hardware access", active: root.createHwAccess },
+                  { key: "allow_vts", label: "Virtual terminals", active: root.createAllowVts },
+                  { key: "gpu", label: "GPU mode", active: root.createGpu },
+                  { key: "x11", label: "X11 socket", active: root.createX11 },
+                  { key: "disable_ipv6", label: "Disable IPv6", active: root.createDisableIpv6 },
+                  { key: "allow_swap", label: "Allow swap", active: root.createAllowSwap },
+                  { key: "selinux_permissive", label: "SELinux permissive", active: root.createSelinuxPermissive },
+                  { key: "allow_sandboxing", label: "Allow sandboxing", active: root.createAllowSandboxing },
+                  { key: "volatile", label: "Volatile mode", active: root.createVolatile },
+                  { key: "force_cgroupv1", label: "Force cgroup v1", active: root.createForceCgroupv1 }
+                ]
+
+                delegate: Button {
+                  required property var modelData
+                  width: (optionToggles.width - optionToggles.columnSpacing) / 2
+                  iconText: modelData.active ? "\u{f0132}" : "\u{f0133}"
+                  iconSize: Style.font.icon
+                  text: root.toggleText(modelData.label, modelData.active)
+                  fontSize: Style.font.bodySmall
+                  foreground: root.barForeground
+                  fontFamily: root.ff
+                  horizontalPadding: Style.spacing.controlPaddingX
+                  verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+                  bordered: true
+                  selected: modelData.active
+                  enabled: !root.creating
+                  onClicked: root.setCreateToggle(modelData.key, !modelData.active)
+                }
+              }
             }
 
             Button {
-              width: (parent.width - parent.spacing) / 2
-              iconText: root.creating ? "\u{f0453}" : "\u{f0415}"
+              width: parent.width
+              iconText: root.createStart ? "\u{f0132}" : "\u{f0133}"
               iconSize: Style.font.icon
-              iconSpinning: root.creating
-              text: root.creating ? "Creating…" : "Create"
+              text: root.createStart ? "Start after creation  ·  on" : "Start after creation  ·  off"
               fontSize: Style.font.bodySmall
               foreground: root.barForeground
               fontFamily: root.ff
               horizontalPadding: Style.spacing.controlPaddingX
               verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
               bordered: true
-              enabled: !root.creating && root.available
-              onClicked: root.submitCreate()
+              selected: root.createStart
+              enabled: !root.creating
+              onClicked: root.createStart = !root.createStart
+            }
+
+            Text {
+              width: parent.width
+              visible: root.creating && root.createStage !== ""
+              textFormat: Text.PlainText
+              text: root.createStage
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+            }
+
+            Text {
+              width: parent.width
+              visible: root.createError !== ""
+              textFormat: Text.PlainText
+              text: root.createError
+              color: root.urgentColor
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+              maximumLineCount: 5
+              elide: Text.ElideRight
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(7)
+
+              Button {
+                width: (parent.width - parent.spacing) / 2
+                iconText: "\u{f0156}"
+                iconSize: Style.font.icon
+                text: "Cancel"
+                fontSize: Style.font.bodySmall
+                foreground: root.barForeground
+                fontFamily: root.ff
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+                bordered: true
+                enabled: !root.creating
+                onClicked: root.closeCreate()
+              }
+
+              Button {
+                width: (parent.width - parent.spacing) / 2
+                iconText: root.creating ? "\u{f0453}" : "\u{f0415}"
+                iconSize: Style.font.icon
+                iconSpinning: root.creating
+                text: root.creating ? "Creating…" : "Create"
+                fontSize: Style.font.bodySmall
+                foreground: root.barForeground
+                fontFamily: root.ff
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+                bordered: true
+                enabled: !root.creating && root.available
+                onClicked: root.submitCreate()
+              }
             }
           }
         }
