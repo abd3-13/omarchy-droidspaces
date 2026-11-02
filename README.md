@@ -51,6 +51,8 @@ one-click control over every container on the machine.
 - Choose a name, tarball path (or **Browse**), image size (default `16G`) and
   an optional image path; by default the image goes to
   `<workspace>/Containers/<name>/rootfs.img`
+- **Browse** closes the panel so the file chooser gets focus, then reopens the
+  form with the selected path (or where you left off if you cancel)
 - Creation formats the image, extracts the tarball, verifies `/sbin/init` or
   `/usr/sbin/init`, and writes the container config
 - Optionally start the container as soon as it is created

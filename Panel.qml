@@ -36,6 +36,7 @@ Panel {
   // ---- create state -------------------------------------------------
   property bool createOpen: false
   property bool creating: false
+  property bool pickingFile: false
   property bool editing: false
   property string editName: ""
   property string deleteTarget: ""
@@ -636,7 +637,11 @@ Panel {
   }
 
   function browseTarball() {
-    if (!root.creating) filePicker.running = true
+    if (root.creating || root.pickingFile) return
+    root.pickingFile = true
+    root.createError = ""
+    pickerStartGuard.restart()
+    filePicker.running = true
   }
 
   // ---- edit / delete ------------------------------------------------
@@ -775,7 +780,7 @@ Panel {
       sendWatch()
       selectedName = ""
       cursor = -1
-      if (!root.creating && !filePicker.running) root.createOpen = false
+      if (!root.creating && !root.pickingFile) root.createOpen = false
       if (!root.deleting) {
         root.deleteTarget = ""
         root.deleteError = ""
@@ -867,11 +872,36 @@ Panel {
       }
     }
 
+    // The panel is a keyboard-focus layer surface. Let the chooser start
+    // first, then close the panel so the dialog can take focus.
+    onStarted: {
+      pickerStartGuard.stop()
+      if (root.pickingFile) root.close()
+    }
+
     onExited: function(exitCode, exitStatus) {
+      pickerStartGuard.stop()
+      if (!root.pickingFile) return
+      root.pickingFile = false
       if (exitCode === 2)
         root.createError = "The file chooser failed; type the path instead."
       else if (exitCode === 127)
         root.createError = "The file chooser could not be started; type the path instead."
+      root.open()
+      Qt.callLater(function() {
+        if (root.createOpen && !root.editing) createTarballField.forceActiveFocus()
+      })
+    }
+  }
+
+  Timer {
+    id: pickerStartGuard
+    interval: 4000
+    repeat: false
+    onTriggered: {
+      if (!root.pickingFile || filePicker.running) return
+      root.pickingFile = false
+      root.createError = "The file chooser could not be started; type the path instead."
     }
   }
 
