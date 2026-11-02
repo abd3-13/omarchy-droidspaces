@@ -39,6 +39,9 @@ one-click control over every container on the machine.
 - Open a container's log
 - Details for each container: rootfs, network mode, ports, memory/CPU/PID
   limits, bind mounts, DNS and privileged flags
+- Edit a container's configuration in the same form used to create it
+- Delete a stopped container, removing its container folder and rootfs image
+  after an inline confirmation
 - Refresh and `droidspaces check` from the panel
 
 **Create from a rootfs tarball**
@@ -59,8 +62,11 @@ hostname and init binary, environment file, bind mounts, network mode (`nat`,
 `host`, `none`, `gateway`, `macvlan`) with NAT/gateway/MACVLAN fields, DNS and
 IPv6, memory/CPU/PID limits, privileged tags, and hardware or boot toggles such
 as GPU, X11, swap, sandboxing and cgroups. Every option is validated by the
-bridge before anything is formatted or mounted. Editing an existing container's
-configuration still stays in the terminal.
+bridge before anything is formatted or mounted.
+
+The same form is reused to edit a container: it is populated from the existing
+config, the name and rootfs stay fixed, and unknown config keys are preserved.
+Changes are written atomically and apply the next time the container starts.
 
 **Keyboard friendly**
 
@@ -72,6 +78,8 @@ Everything in the panel can be driven from the keyboard:
 | <kbd>Enter</kbd> / <kbd>Space</kbd> | Expand or collapse the selected container |
 | <kbd>Tab</kbd> | Switch panels |
 | <kbd>n</kbd> | New container |
+| <kbd>e</kbd> | Edit the selected container |
+| <kbd>x</kbd> | Delete the selected container |
 | <kbd>s</kbd> | Start or stop the selected container |
 | <kbd>r</kbd> | Refresh |
 | <kbd>c</kbd> | Run `droidspaces check` |
@@ -130,8 +138,8 @@ unusable, so the widget starts one long-lived root bridge through `pkexec`:
 
 The bridge streams one JSON object per line and accepts a small command set on
 stdin (`refresh`, `watch`, `start`, `stop`, `restart`, `logs`, `check`,
-`create`, `exit`). Creation streams `progress` messages while it prepares,
-formats, mounts and extracts. Container names must match
+`create`, `config`, `edit`, `delete`, `exit`). Creation streams `progress`
+messages while it prepares, formats, mounts and extracts. Container names must match
 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` and no shell is ever invoked. It ticks
 every 6 s while closed and 2 s while the panel is open.
 
@@ -185,6 +193,12 @@ bin/droidspaces-bridge --workspace /tmp/ds-test --allow-nonroot --once
 - Create options are validated first: network modes and MACVLAN modes must be
   known values, bind mount and environment paths must be absolute, and memory,
   CPU, PID and privileged settings are range-checked.
+- Editing rewrites only the keys managed by the form and preserves comments and
+  unknown settings in the existing config.
+- Deletion is refused while the container is running, when the container folder
+  resolves outside the workspace, or when the rootfs image resolves outside the
+  workspace or the user's home. Only regular files and symlinks are removed as
+  images; directories are removed only with the container folder.
 - It runs the system `/usr/bin/droidspaces` as root. Keep that binary and the
   container root filesystems trusted: a writable container rootfs is, by
   design, a way to run code as root inside that container.

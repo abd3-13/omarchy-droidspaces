@@ -21,6 +21,8 @@ Item {
   signal requestAction(string action, string name)
   signal openShell(string name)
   signal openLog(string name)
+  signal editContainer(string name)
+  signal deleteContainer(string name)
 
   readonly property string name: String(container.name || "")
   readonly property bool running: !!container.running
@@ -301,6 +303,37 @@ Item {
               horizontalAlignment: Text.AlignRight
               elide: Text.ElideMiddle
             }
+          }
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+
+          Button {
+            width: (parent.width - parent.spacing) / 2
+            text: "Edit"
+            fontSize: Style.font.bodySmall
+            foreground: row.foreground
+            fontFamily: row.fontFamily
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+            bordered: true
+            enabled: !row.busy
+            onClicked: row.editContainer(row.name)
+          }
+
+          Button {
+            width: (parent.width - parent.spacing) / 2
+            text: "Delete"
+            fontSize: Style.font.bodySmall
+            foreground: row.urgentColor
+            fontFamily: row.fontFamily
+            horizontalPadding: Style.spacing.controlPaddingX
+            verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+            bordered: true
+            enabled: !row.busy
+            onClicked: row.deleteContainer(row.name)
           }
         }
       }

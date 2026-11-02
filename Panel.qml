@@ -36,6 +36,11 @@ Panel {
   // ---- create state -------------------------------------------------
   property bool createOpen: false
   property bool creating: false
+  property bool editing: false
+  property string editName: ""
+  property string deleteTarget: ""
+  property bool deleting: false
+  property string deleteError: ""
   property string createName: ""
   property string createTarball: ""
   property string createSize: "16G"
@@ -197,6 +202,17 @@ Panel {
       root.connecting = false
       if (root.selectedName !== "" && !root.containerByName(root.selectedName)) root.selectedName = ""
       if (root.cursor >= root.containers.length) root.cursor = root.containers.length ? root.containers.length - 1 : -1
+      if (!root.deleting && root.deleteTarget !== ""
+          && !root.containerByName(root.deleteTarget)) {
+        root.deleteTarget = ""
+        root.deleteError = ""
+      }
+      if (root.editing && root.editName !== ""
+          && !root.containerByName(root.editName)) {
+        root.createOpen = false
+        root.editing = false
+        root.editName = ""
+      }
       return
     }
 
@@ -252,6 +268,46 @@ Panel {
         root.refresh()
       } else {
         root.createError = String(message.message || "Creation failed.")
+      }
+      return
+    }
+
+    if (action === "config") {
+      if (message.ok) {
+        root.openEditForm(name, message.form || {})
+      } else {
+        root.setNotice("Could not load " + name + ": "
+                       + String(message.message || "unknown error"), true)
+      }
+      return
+    }
+
+    if (action === "edit") {
+      root.creating = false
+      root.createStage = ""
+      if (message.ok) {
+        root.createOpen = false
+        root.editing = false
+        root.editName = ""
+        root.createError = ""
+        root.setNotice(String(message.message || ("Saved " + name)), false)
+        root.refresh()
+      } else {
+        root.createError = String(message.message || "Saving failed.")
+      }
+      return
+    }
+
+    if (action === "delete") {
+      root.deleting = false
+      if (message.ok) {
+        root.deleteTarget = ""
+        root.deleteError = ""
+        root.setNotice(String(message.message || ("Deleted " + name)), false)
+        root.refresh()
+      } else {
+        root.deleteError = String(message.message || "Deletion failed.")
+        root.setNotice("Delete " + name + " failed: " + root.deleteError, true)
       }
       return
     }
@@ -339,8 +395,13 @@ Panel {
     else if (key === "force_cgroupv1") root.createForceCgroupv1 = value
   }
 
-  function openCreate() {
-    if (!root.connected) return
+  function truthy(value) {
+    if (typeof value === "boolean") return value
+    var text = String(value === undefined || value === null ? "" : value).toLowerCase()
+    return text !== "" && text !== "0" && text !== "false"
+  }
+
+  function resetFormValues() {
     root.creating = false
     root.createName = ""
     root.createTarball = ""
@@ -379,31 +440,86 @@ Panel {
     root.createStage = ""
     root.createError = ""
     root.notice = ""
-    createNameField.text = ""
-    createTarballField.text = ""
-    createSizeField.text = "16G"
-    createImageField.text = ""
-    createHostnameField.text = ""
-    createInitField.text = ""
-    createEnvField.text = ""
-    createBindField.text = ""
-    createNatIpField.text = ""
-    createUpstreamField.text = ""
-    createPortsField.text = ""
-    createDnsField.text = ""
-    createGatewayField.text = ""
-    createGatewayNetField.text = ""
-    createGatewayIfaceField.text = ""
-    createGatewayBridgeField.text = ""
-    createMacvlanParentField.text = ""
-    createMemoryField.text = ""
-    createCpusField.text = ""
-    createPidsField.text = ""
-    createPrivilegedField.text = ""
-    createNetDropdown.value = "nat"
-    createMacvlanModeDropdown.value = "bridge"
+  }
+
+  function syncFormFields() {
+    createNameField.text = root.createName
+    createTarballField.text = root.createTarball
+    createSizeField.text = root.createSize
+    createImageField.text = root.createImage
+    createHostnameField.text = root.createHostname
+    createInitField.text = root.createInit
+    createEnvField.text = root.createEnvFile
+    createBindField.text = root.createBind
+    createNatIpField.text = root.createNatIp
+    createUpstreamField.text = root.createUpstream
+    createPortsField.text = root.createPorts
+    createDnsField.text = root.createDns
+    createGatewayField.text = root.createGateway
+    createGatewayNetField.text = root.createGatewayNet
+    createGatewayIfaceField.text = root.createGatewayIface
+    createGatewayBridgeField.text = root.createGatewayBridge
+    createMacvlanParentField.text = root.createMacvlanParent
+    createMemoryField.text = root.createMemory
+    createCpusField.text = root.createCpus
+    createPidsField.text = root.createPids
+    createPrivilegedField.text = root.createPrivileged
+    createNetDropdown.value = root.createNet
+    createMacvlanModeDropdown.value = root.createMacvlanMode
+  }
+
+  function openCreate() {
+    if (!root.connected) return
+    root.resetFormValues()
+    root.editing = false
+    root.editName = ""
+    root.deleteTarget = ""
+    root.deleteError = ""
+    root.syncFormFields()
     root.createOpen = true
     Qt.callLater(function() { createNameField.forceActiveFocus() })
+  }
+
+  function openEditForm(name, form) {
+    root.resetFormValues()
+    root.editing = true
+    root.editName = String(name || "")
+    root.createName = root.editName
+    root.createImage = String(form.rootfs_path || "")
+    root.createHostname = String(form.hostname || "")
+    root.createInit = String(form.init || "")
+    root.createEnvFile = String(form.env_file || "")
+    root.createBind = String(form.bind_mounts || "")
+    root.createNet = String(form.net_mode || "nat")
+    root.createNatIp = String(form.nat_ip || "")
+    root.createUpstream = String(form.upstream || "")
+    root.createPorts = String(form.ports || "")
+    root.createDns = String(form.dns || "")
+    root.createDisableIpv6 = !!form.disable_ipv6
+    root.createGateway = String(form.gateway || "")
+    root.createGatewayNet = String(form.gateway_net || "")
+    root.createGatewayIface = String(form.gateway_iface || "")
+    root.createGatewayBridge = String(form.gateway_bridge || "")
+    root.createMacvlanParent = String(form.macvlan_parent || "")
+    root.createMacvlanMode = String(form.macvlan_mode || "bridge")
+    root.createHwAccess = !!form.hw_access
+    root.createAllowVts = !!form.allow_vts
+    root.createGpu = !!form.gpu
+    root.createX11 = !!form.x11
+    root.createMemory = String(form.memory || "")
+    root.createAllowSwap = !!form.allow_swap
+    root.createCpus = String(form.cpus || "")
+    root.createPids = String(form.pids_limit || "")
+    root.createPrivileged = String(form.privileged || "")
+    root.createSelinuxPermissive = !!form.selinux_permissive
+    root.createAllowSandboxing = !!form.allow_sandboxing
+    root.createVolatile = !!form.volatile
+    root.createForceCgroupv1 = !!form.force_cgroupv1
+    root.deleteTarget = ""
+    root.deleteError = ""
+    root.syncFormFields()
+    root.createOpen = true
+    Qt.callLater(function() { createHostnameField.forceActiveFocus() })
   }
 
   function closeCreate() {
@@ -411,34 +527,38 @@ Panel {
     root.createOpen = false
     root.createStage = ""
     root.createError = ""
+    root.editing = false
+    root.editName = ""
   }
 
   function submitCreate() {
     if (!root.connected || root.creating) return
-    var name = root.createName.trim()
-    var tarball = root.expandHome(root.createTarball)
-    var image = root.expandHome(root.createImage)
+    var name = root.editing ? root.editName : root.createName.trim()
+    var tarball = root.editing ? "" : root.expandHome(root.createTarball)
+    var image = root.editing ? root.createImage : root.expandHome(root.createImage)
     var size = root.createSize.trim()
     var hostname = root.createHostname.trim()
     if (!validContainerName(name)) {
       root.createError = "Use 1-64 letters, digits, dots, dashes or underscores; start with a letter or digit."
       return
     }
-    if (tarball === "") {
-      root.createError = "Choose the rootfs tarball you downloaded."
-      return
-    }
-    if (tarball.charAt(0) !== "/") {
-      root.createError = "The tarball path must be absolute."
-      return
-    }
-    if (image !== "" && image.charAt(0) !== "/") {
-      root.createError = "The image path must be absolute."
-      return
-    }
-    if (size === "") {
-      root.createError = "Enter an image size, for example 16G."
-      return
+    if (!root.editing) {
+      if (tarball === "") {
+        root.createError = "Choose the rootfs tarball you downloaded."
+        return
+      }
+      if (tarball.charAt(0) !== "/") {
+        root.createError = "The tarball path must be absolute."
+        return
+      }
+      if (image !== "" && image.charAt(0) !== "/") {
+        root.createError = "The image path must be absolute."
+        return
+      }
+      if (size === "") {
+        root.createError = "Enter an image size, for example 16G."
+        return
+      }
     }
     if (hostname !== "" && !/^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/.test(hostname)) {
       root.createError = "Hostname must start with a letter or digit and use letters, digits, dots or dashes."
@@ -451,23 +571,21 @@ Panel {
       return
     }
 
+    var action = root.editing ? "edit" : "create"
     var req = "r" + (++root.reqSeq)
     var next = {}
     for (var key in root.pending) next[key] = root.pending[key]
-    next[req] = { action: "create", name: name }
+    next[req] = { action: action, name: name }
     root.pending = next
     root.creating = true
     root.createError = ""
-    root.createStage = "Queued…"
+    root.createStage = root.editing ? "Saving…" : "Queued…"
 
     var message = {
-      cmd: "create",
+      cmd: action,
       req: req,
       name: name,
-      tarball: tarball,
-      size: size,
       hostname: hostname,
-      start: root.createStart,
       options: {
         init: root.createInit.trim(),
         env_file: envFile,
@@ -499,7 +617,12 @@ Panel {
         force_cgroupv1: root.createForceCgroupv1
       }
     }
-    if (image !== "") message.image = image
+    if (!root.editing) {
+      message.tarball = tarball
+      message.size = size
+      message.start = root.createStart
+      if (image !== "") message.image = image
+    }
 
     if (!send(message)) {
       var rest = {}
@@ -514,6 +637,77 @@ Panel {
 
   function browseTarball() {
     if (!root.creating) filePicker.running = true
+  }
+
+  // ---- edit / delete ------------------------------------------------
+  function requestEdit(name) {
+    if (!root.connected || root.anyBusy) return
+    var req = "r" + (++root.reqSeq)
+    var next = {}
+    for (var key in root.pending) next[key] = root.pending[key]
+    next[req] = { action: "config", name: String(name || "") }
+    root.pending = next
+    root.notice = ""
+    root.deleteTarget = ""
+    root.deleteError = ""
+    if (!send({ cmd: "config", name: String(name || ""), req: req })) {
+      var rest = {}
+      for (var other in root.pending)
+        if (other !== req) rest[other] = root.pending[other]
+      root.pending = rest
+      root.setNotice("The helper is not connected.", true)
+    }
+  }
+
+  function requestDelete(name) {
+    if (!root.connected || root.anyBusy) return
+    var c = root.containerByName(name)
+    if (c && c.running) {
+      root.setNotice("Stop " + String(name) + " before deleting it.", true)
+      return
+    }
+    root.deleteTarget = String(name || "")
+    root.deleteError = ""
+    root.createOpen = false
+    root.editing = false
+    root.editName = ""
+    root.notice = ""
+  }
+
+  function confirmDelete() {
+    if (!root.connected || root.deleteTarget === "" || root.deleting) return
+    var name = root.deleteTarget
+    var req = "r" + (++root.reqSeq)
+    var next = {}
+    for (var key in root.pending) next[key] = root.pending[key]
+    next[req] = { action: "delete", name: name }
+    root.pending = next
+    root.deleting = true
+    root.deleteError = ""
+    if (!send({ cmd: "delete", name: name, req: req })) {
+      var rest = {}
+      for (var other in root.pending)
+        if (other !== req) rest[other] = root.pending[other]
+      root.pending = rest
+      root.deleting = false
+      root.deleteError = "The helper is not connected."
+    }
+  }
+
+  function cancelDelete() {
+    if (root.deleting) return
+    root.deleteTarget = ""
+    root.deleteError = ""
+  }
+
+  function editSelected() {
+    if (cursor < 0 || cursor >= containers.length) return
+    requestEdit(String(containers[cursor].name || ""))
+  }
+
+  function deleteSelected() {
+    if (cursor < 0 || cursor >= containers.length) return
+    requestDelete(String(containers[cursor].name || ""))
   }
 
   // ---- shell / logs -------------------------------------------------
@@ -582,6 +776,10 @@ Panel {
       selectedName = ""
       cursor = -1
       if (!root.creating && !filePicker.running) root.createOpen = false
+      if (!root.deleting) {
+        root.deleteTarget = ""
+        root.deleteError = ""
+      }
     }
   }
 
@@ -630,6 +828,11 @@ Panel {
       root.creating = false
       root.createStage = ""
       root.createOpen = false
+      root.editing = false
+      root.editName = ""
+      root.deleting = false
+      root.deleteTarget = ""
+      root.deleteError = ""
       forceStop.stop()
       if (root.quitting) {
         root.quitting = false
@@ -710,6 +913,8 @@ Panel {
         else if (text === "d") root.disconnectHelper()
         else if (text === "c") root.requestCheck()
         else if (text === "n") root.openCreate()
+        else if (text === "e") root.editSelected()
+        else if (text === "x") root.deleteSelected()
       }
 
       Column {
@@ -894,7 +1099,7 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              text: "New container"
+              text: root.editing ? "Edit " + root.editName : "New container"
               color: root.barForeground
               font.family: root.ff
               font.pixelSize: Style.font.subtitle
@@ -904,8 +1109,11 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: "Creates a sparse ext4 image and extracts a rootfs tarball into it. "
-                    + "The container is added to the list, stopped unless you ask to start it."
+              text: root.editing
+                ? "Updates the container configuration. The name and rootfs stay the same; "
+                  + "changes apply the next time the container starts."
+                : "Creates a sparse ext4 image and extracts a rootfs tarball into it. "
+                  + "The container is added to the list, stopped unless you ask to start it."
               color: root.dim
               font.family: root.ff
               font.pixelSize: Style.font.caption
@@ -913,6 +1121,18 @@ Panel {
             }
 
             Text {
+              width: parent.width
+              visible: root.editing
+              textFormat: Text.PlainText
+              text: "Rootfs: " + root.createImage
+              color: root.dim
+              font.family: root.ff
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideMiddle
+            }
+
+            Text {
+              visible: !root.editing
               textFormat: Text.PlainText
               text: "Name"
               color: root.dim
@@ -922,6 +1142,7 @@ Panel {
 
             TextField {
               id: createNameField
+              visible: !root.editing
               width: parent.width
               placeholderText: "ubuntu"
               foreground: root.barForeground
@@ -934,6 +1155,7 @@ Panel {
             }
 
             Text {
+              visible: !root.editing
               textFormat: Text.PlainText
               text: "Rootfs tarball"
               color: root.dim
@@ -942,6 +1164,7 @@ Panel {
             }
 
             Row {
+              visible: !root.editing
               width: parent.width
               spacing: Style.space(6)
 
@@ -976,6 +1199,7 @@ Panel {
             }
 
             Row {
+              visible: !root.editing
               width: parent.width
               spacing: Style.space(8)
 
@@ -1604,6 +1828,7 @@ Panel {
             }
 
             Button {
+              visible: !root.editing
               width: parent.width
               iconText: root.createStart ? "\u{f0132}" : "\u{f0133}"
               iconSize: Style.font.icon
@@ -1664,10 +1889,12 @@ Panel {
 
               Button {
                 width: (parent.width - parent.spacing) / 2
-                iconText: root.creating ? "\u{f0453}" : "\u{f0415}"
+                iconText: root.creating ? "\u{f0453}" : (root.editing ? "\u{f0193}" : "\u{f0415}")
                 iconSize: Style.font.icon
                 iconSpinning: root.creating
-                text: root.creating ? "Creating…" : "Create"
+                text: root.creating
+                  ? (root.editing ? "Saving…" : "Creating…")
+                  : (root.editing ? "Save" : "Create")
                 fontSize: Style.font.bodySmall
                 foreground: root.barForeground
                 fontFamily: root.ff
@@ -1800,6 +2027,95 @@ Panel {
             elide: Text.ElideRight
           }
 
+          // delete confirmation
+          BorderSurface {
+            width: parent.width
+            visible: root.deleteTarget !== ""
+            implicitHeight: deleteConfirm.implicitHeight + Style.space(16)
+            color: Qt.rgba(root.urgentColor.r, root.urgentColor.g, root.urgentColor.b, 0.08)
+            radius: Style.cornerRadius
+
+            Column {
+              id: deleteConfirm
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(10)
+              anchors.rightMargin: Style.space(10)
+              spacing: Style.space(6)
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "Delete " + root.deleteTarget + "?"
+                color: root.barForeground
+                font.family: root.ff
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                wrapMode: Text.Wrap
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: "This removes the container folder and its rootfs image. It cannot be undone."
+                color: root.dim
+                font.family: root.ff
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.Wrap
+              }
+
+              Text {
+                width: parent.width
+                visible: root.deleteError !== ""
+                textFormat: Text.PlainText
+                text: root.deleteError
+                color: root.urgentColor
+                font.family: root.ff
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.Wrap
+                maximumLineCount: 4
+                elide: Text.ElideRight
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.space(7)
+
+                Button {
+                  width: (parent.width - parent.spacing) / 2
+                  iconText: "\u{f0156}"
+                  iconSize: Style.font.icon
+                  text: "Cancel"
+                  fontSize: Style.font.bodySmall
+                  foreground: root.barForeground
+                  fontFamily: root.ff
+                  horizontalPadding: Style.spacing.controlPaddingX
+                  verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+                  bordered: true
+                  enabled: !root.deleting
+                  onClicked: root.cancelDelete()
+                }
+
+                Button {
+                  width: (parent.width - parent.spacing) / 2
+                  iconText: root.deleting ? "\u{f0453}" : "\u{f01b4}"
+                  iconSize: Style.font.icon
+                  iconSpinning: root.deleting
+                  text: root.deleting ? "Deleting…" : "Delete"
+                  fontSize: Style.font.bodySmall
+                  foreground: root.urgentColor
+                  fontFamily: root.ff
+                  horizontalPadding: Style.spacing.controlPaddingX
+                  verticalPadding: Style.spacing.controlPaddingY + Style.space(1)
+                  bordered: true
+                  enabled: !root.deleting
+                  onClicked: root.confirmDelete()
+                }
+              }
+            }
+          }
+
           Text {
             width: parent.width
             visible: !root.available
@@ -1888,6 +2204,8 @@ Panel {
               }
               onOpenShell: function(name) { root.openShell(name) }
               onOpenLog: function(name) { root.openLog(name) }
+              onEditContainer: function(name) { root.requestEdit(name) }
+              onDeleteContainer: function(name) { root.requestDelete(name) }
             }
           }
 

@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "local.droidspaces",
   "name": "Droidspaces",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "local",
   "license": "MIT",
-  "description": "Manage local Droidspaces containers from the bar: live status, create with CLI options, start, stop, restart, shell and details",
+  "description": "Manage local Droidspaces containers from the bar: live status, create and edit with CLI options, start, stop, restart, shell, details and delete",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Droidspaces",
-    "description": "Local containers at a glance, with create (including CLI options), start, stop, restart, shell and details",
+    "description": "Local containers at a glance, with create and edit (including CLI options), start, stop, restart, shell, details and delete",
     "category": "System",
     "allowMultiple": false,
     "defaults": {
