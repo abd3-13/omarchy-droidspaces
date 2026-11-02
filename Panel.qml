@@ -714,8 +714,8 @@ Panel {
   function openShell(name) {
     Quickshell.execDetached([
       "omarchy-launch-terminal",
-      "--title", "Droidspaces · " + String(name),
-      "--",
+      "--title=Droidspaces · " + String(name),
+      "-e",
       "pkexec", "/usr/bin/droidspaces", "--name=" + String(name), "enter"
     ])
     root.close()
@@ -726,8 +726,8 @@ Panel {
     if (!c || String(c.log_path || "") === "") return
     Quickshell.execDetached([
       "omarchy-launch-terminal",
-      "--title", "Droidspaces · " + String(name) + " log",
-      "--",
+      "--title=Droidspaces · " + String(name) + " log",
+      "-e",
       "tail", "-n", "200", "-f", String(c.log_path)
     ])
     root.close()
