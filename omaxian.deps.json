@@ -1,0 +1,16 @@
+{
+  "apt": [
+    "e2fsprogs",
+    "tar",
+    "util-linux",
+    "python3",
+    "pkexec",
+    "zenity",
+    "zstd",
+    "xz-utils"
+  ],
+  "manual": [
+    "Install Droidspaces from the official .deb (amd64/arm64) so the binary is at /usr/bin/droidspaces, or place the tarball binary at /usr/local/bin/droidspaces.",
+    "Keep a polkit agent running (Omaxian installs mate-polkit) so pkexec can prompt when the root helper starts."
+  ]
+}

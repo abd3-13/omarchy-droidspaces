@@ -1,17 +1,20 @@
-# Droidspaces for Omarchy
+# Droidspaces for Omarchy and Omaxian
 
 **Manage your [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS/)
-containers from the Omarchy bar** — live status, start/stop, a shell, and a
-complete container creation form, without leaving the desktop.
+containers from the Omarchy or Omaxian bar** — live status, start/stop, a shell,
+and a complete container creation form, without leaving the desktop.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Platform: Omarchy](https://img.shields.io/badge/platform-Omarchy-4a90d9)](#requirements)
+[![Platform: Omaxian](https://img.shields.io/badge/platform-Omaxian-6c5ce7)](#requirements)
 [![Built with QML](https://img.shields.io/badge/built%20with-QML-41cd52)](https://quickshell.org/)
 
 A [Quickshell](https://quickshell.org/) bar widget and panel for containers
-managed by Droidspaces. The bar shows how many containers are running, and the
-panel gives you the full picture: OS, hostname, IP, uptime, CPU and RAM, plus
-one-click control over every container on the machine.
+managed by Droidspaces. It runs on [Omarchy](https://omarchy.org/) and on
+[Omaxian](https://github.com/aozora/omaxian), the Debian/X11/i3 port of Omarchy.
+The bar shows how many containers are running, and the panel gives you the full
+picture: OS, hostname, IP, uptime, CPU and RAM, plus one-click control over
+every container on the machine.
 
 ## Screenshots
 
@@ -90,15 +93,23 @@ Everything in the panel can be driven from the keyboard:
 
 ## Requirements
 
-- [Omarchy](https://omarchy.org/) with its Quickshell-based shell
+- [Omarchy](https://omarchy.org/) or [Omaxian](https://github.com/aozora/omaxian)
+  with its Quickshell-based shell
 - [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS/) installed at
-  `/usr/bin/droidspaces`
+  `/usr/bin/droidspaces` or `/usr/local/bin/droidspaces` (the plugin searches
+  both, then `PATH`)
 - `pkexec` / polkit, used to start the root helper
 - Python 3 (standard library only) for the helper
+- A terminal for the shell and log views: `omarchy-launch-tui` and its
+  configured terminal (on Omaxian, `kitty` and the i3 `i3_term` script)
 - For creating containers: `e2fsprogs` (`mkfs.ext4`/`mke2fs`), `tar` and
   `util-linux` (`mount`/`umount`), plus an ext4-capable kernel
+- For compressed rootfs tarballs: `zstd` (`.tar.zst`) and `xz-utils` (`.tar.xz`)
+- `zenity` (or the Omarchy/Omaxian file chooser) for the **Browse** button
 
 ## Install
+
+### Omarchy
 
 Add the plugin from its repository and enable it:
 
@@ -109,6 +120,29 @@ omarchy plugin add https://github.com/abd3-13/omarchy-droidspaces.git --enable
 Then enable the **Droidspaces** widget from the normal Omarchy plugin/bar
 settings and place it in whichever bar section you prefer.
 
+### Omaxian
+
+Omaxian uses the same plugin format and shell APIs. Add and enable it with its
+own helper:
+
+```sh
+omarchy-plugin-add https://github.com/abd3-13/omarchy-droidspaces.git --enable
+```
+
+The plugin is installed into `~/.config/omarchy/plugins/local.droidspaces/`.
+Enable the **Droidspaces** widget in the bar settings, then reload the shell:
+
+```sh
+omarchy-restart-shell
+```
+
+Check the port before installing:
+
+```sh
+omarchy-plugin-check <plugin-folder> --verbose
+omarchy-plugin-validate <plugin-folder>
+```
+
 The first time the panel is opened, it asks for authentication to install and
 start the root helper. On a new machine (or after a plugin update) this can
 prompt twice: once to install the bridge and once to start it. Later sessions
@@ -118,7 +152,7 @@ until you log out.
 ### Settings
 
 Plugin settings live in `~/.config/omarchy/shell.json` and can be changed from
-the Omarchy settings UI:
+the plugin/bar settings UI on either desktop:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -132,7 +166,9 @@ action (`start`, `stop`, `restart`). Prompting for every tick would be
 unusable, so the widget starts one long-lived root bridge through `pkexec`:
 
 1. `bin/ensure-helper` compares `bin/droidspaces-bridge` with the installed
-   copy at `/usr/local/libexec/droidspaces-omarchy/bridge`.
+   copy at `/usr/local/libexec/droidspaces-omarchy/bridge`. (The path keeps its
+   historical `omarchy` name so updates do not orphan an installed helper; it
+   is used unchanged on both desktops.)
 2. If missing or different, it installs it with
    `/usr/bin/install -D -m 0755 -o root -g root` through `pkexec`. The root
    bridge is therefore root-owned, not a user-writable script.
@@ -173,17 +209,24 @@ bin/droidspaces-bridge --workspace /tmp/ds-test --allow-nonroot --once
 
 ## Troubleshooting
 
-- Shell logs: `journalctl --user -t omarchy-shell -f`
-- Validate the manifest: `omarchy plugin validate <plugin-folder>`
+- Shell logs: `~/.local/state/omarchy/shell.log` (both desktops). Follow it with
+  `tail -f ~/.local/state/omarchy/shell.log`.
+- Validate the manifest: `omarchy plugin validate <plugin-folder>` on Omarchy,
+  or `omarchy-plugin-validate <plugin-folder>` on Omaxian.
+- Check Omaxian portability: `omarchy-plugin-check <plugin-folder> --verbose`.
 - `pkexec` exit codes: `126` means the prompt was dismissed, `127` means the
   action was not authorized or the helper could not be started.
 - The panel shows the last action error and the last `show` error. Use
   **Check** to run `droidspaces check` as root.
 - If a plugin update changed the bridge, the next connect asks for
   authentication again to refresh the installed copy.
-- After editing the QML, a full shell restart (`omarchy restart shell`) may be
-  needed: hot reload can keep an older compiled component even when the file
-  on disk has changed. The bridge is not affected by this.
+- After editing the QML, a full shell restart may be needed: hot reload can keep
+  an older compiled component even when the file on disk has changed. Run
+  `omarchy restart shell` on Omarchy or `omarchy-restart-shell` on Omaxian. The
+  bridge is not affected by this.
+- If the panel says `droidspaces was not found`, install the Droidspaces `.deb`
+  (recommended) or make sure the tarball binary is at `/usr/local/bin` and
+  executable. The panel uses the path reported by the bridge.
 
 ## Security notes
 
@@ -201,9 +244,10 @@ bin/droidspaces-bridge --workspace /tmp/ds-test --allow-nonroot --once
   resolves outside the workspace, or when the rootfs image resolves outside the
   workspace or the user's home. Only regular files and symlinks are removed as
   images; directories are removed only with the container folder.
-- It runs the system `/usr/bin/droidspaces` as root. Keep that binary and the
-  container root filesystems trusted: a writable container rootfs is, by
-  design, a way to run code as root inside that container.
+- It runs the system Droidspaces binary (`/usr/bin/droidspaces` or
+  `/usr/local/bin/droidspaces`) as root. Keep that binary and the container root
+  filesystems trusted: a writable container rootfs is, by design, a way to run
+  code as root inside that container.
 - Starting the helper stops older copies of this bridge (matched by their
   exact root-owned path), so reloading the plugin cannot accumulate root
   processes.
@@ -214,11 +258,15 @@ bin/droidspaces-bridge --workspace /tmp/ds-test --allow-nonroot --once
 ## Uninstall
 
 ```sh
+# Omarchy
 omarchy plugin disable local.droidspaces
+# Omaxian
+omarchy-plugin-disable local.droidspaces
+
 ~/.config/omarchy/plugins/local.droidspaces/bin/uninstall
 ```
 
-The second command removes `/usr/local/libexec/droidspaces-omarchy/bridge`
+The `uninstall` script removes `/usr/local/libexec/droidspaces-omarchy/bridge`
 after one authentication prompt. Adjust the path if you installed the plugin
 into a different folder. Removing the plugin folder alone leaves the installed
 helper behind.

@@ -96,6 +96,8 @@ Panel {
   readonly property real ramUsedKb: snapshot ? (Number(snapshot.ram_used_kb) || 0) : 0
   readonly property var host: snapshot && snapshot.host ? snapshot.host : ({})
   readonly property bool available: !snapshot || snapshot.available !== false
+  readonly property string droidspacesBin: snapshot && String(snapshot.droidspaces || "") !== ""
+    ? String(snapshot.droidspaces) : "/usr/bin/droidspaces"
   readonly property string stateError: snapshot ? String(snapshot.error || "") : ""
 
   readonly property string barIcon: "\u{f01a6}"
@@ -718,10 +720,9 @@ Panel {
   // ---- shell / logs -------------------------------------------------
   function openShell(name) {
     Quickshell.execDetached([
-      "omarchy-launch-terminal",
-      "--title=Droidspaces · " + String(name),
-      "-e",
-      "pkexec", "/usr/bin/droidspaces", "--name=" + String(name), "enter"
+      "omarchy-launch-tui",
+      "--app-id=local.droidspaces",
+      "pkexec", root.droidspacesBin, "--name=" + String(name), "enter"
     ])
     root.close()
   }
@@ -730,9 +731,8 @@ Panel {
     var c = root.containerByName(name)
     if (!c || String(c.log_path || "") === "") return
     Quickshell.execDetached([
-      "omarchy-launch-terminal",
-      "--title=Droidspaces · " + String(name) + " log",
-      "-e",
+      "omarchy-launch-tui",
+      "--app-id=local.droidspaces",
       "tail", "-n", "200", "-f", String(c.log_path)
     ])
     root.close()
@@ -2150,7 +2150,7 @@ Panel {
             width: parent.width
             visible: !root.available
             textFormat: Text.PlainText
-            text: "droidspaces was not found at /usr/bin/droidspaces."
+            text: "droidspaces was not found (looked in /usr/bin and /usr/local/bin)."
             color: root.urgentColor
             font.family: root.ff
             font.pixelSize: Style.font.bodySmall
