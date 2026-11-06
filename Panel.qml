@@ -149,7 +149,12 @@ Panel {
   function send(message) {
     if (!helper.running) return false
     try {
-      return helper.write(JSON.stringify(message) + "\n")
+      helper.write(JSON.stringify(message) + "\n")
+      // Quickshell's Process.write() returns nothing, so a successful call
+      // cannot be reported by its return value. Returning true here is what
+      // tells callers the command left the widget; a dead helper is caught by
+      // the running check above and by the process exit handler.
+      return true
     } catch (e) {
       return false
     }
